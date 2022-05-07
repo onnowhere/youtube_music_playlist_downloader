@@ -246,11 +246,11 @@ if __name__ == "__main__":
             url = input("Please enter the url of the playlist you wish to download: ")
             reverse_playlist = False
             while True:
-                response = input("Reverse playlist? (y/n): ").lower()
+                response = input("Reverse playlist? (y/N): ").lower()
                 if response == "y":
                     reverse_playlist = True
                     break
-                elif response == "n":
+                elif response == "n" or response == "":
                     reverse_playlist = False
                     break
                 else:
