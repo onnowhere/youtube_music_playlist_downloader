@@ -57,7 +57,7 @@ def update_track_num(file_path, track_num):
 
     tags.save(v2_version=3)
     
-def generate_metadata(file_path, link, album_name, track_num):
+def generate_metadata(file_path, link, track_num):
     tags = ID3(file_path)
     
     # Generate only if metadata is missing
@@ -71,7 +71,8 @@ def generate_metadata(file_path, link, album_name, track_num):
             info_dict = ytdl.extract_info(link, download=False)
             video_id = info_dict.get("id", None)
             video_title = info_dict.get("title", None)
-            uploader = info_dict.get("uploader", None)
+            uploader = info_dict.get("artist", None)
+            album = info_dict.get("album", None)
             thumbnail_url = info_dict.get("thumbnail", None)
             
         print("Updating metadata for '{0}'...".format(video_title))
@@ -91,7 +92,7 @@ def generate_metadata(file_path, link, album_name, track_num):
         # Generate tags
         tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
         tags.add(TIT2(encoding=3, text=video_title))
-        tags.add(TALB(encoding=3, text=album_name))
+        tags.add(TALB(encoding=3, text=album))
         tags.add(TPE1(encoding=3, text=uploader))
         tags.add(TRCK(encoding=3, text=str(track_num)))
 
@@ -179,7 +180,7 @@ def generate_playlist(url, reverse_playlist=False):
                 os.rename(song_file_path, file_path)
 
             # Generate metadata just in case it is missing
-            generate_metadata(file_path, link, album_name, track_num)
+            generate_metadata(file_path, link, track_num)
             
             # Skip downloading audio if already downloaded
             print("Skipped downloading '{0}' ({1}/{2})".format(link, track_num, len(playlist_entries)))
@@ -193,7 +194,7 @@ def generate_playlist(url, reverse_playlist=False):
                 # Locate new file by video id and update metadata
                 song_file_dict = get_song_file_dict(album_name)
                 file_path = song_file_dict[video_id]["file_path"]
-                generate_metadata(file_path, link, album_name, track_num)
+                generate_metadata(file_path, link, track_num)
             except Exception as e:
                 print("Unable to download video:", e)
 
