@@ -7,7 +7,7 @@ import subprocess
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
-from youtube_dl import YoutubeDL
+from yt_dlp import YoutubeDL
 from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, USLT, error
 
 # ID3 info:
@@ -69,7 +69,6 @@ def generate_metadata(file_path, link, album_name, track_num):
         }
         with YoutubeDL(ytdl_opts) as ytdl:
             info_dict = ytdl.extract_info(link, download=False)
-            video_url = info_dict.get("url", None)
             video_id = info_dict.get("id", None)
             video_title = info_dict.get("title", None)
             uploader = info_dict.get("uploader", None)
@@ -157,9 +156,8 @@ def generate_playlist(url, reverse_playlist=False):
     # Download each item in the list
     for i, video_info in enumerate(playlist_entries):
         track_num = i + 1
-        video_url = video_info["url"]
         video_id = video_info["id"]
-        link = "https://www.youtube.com/watch?v={0}".format(video_url)
+        link = "https://www.youtube.com/watch?v={0}".format(video_id)
 
         updated_video_ids.append(video_id)
         song_file_info = song_file_dict.get(video_id)
