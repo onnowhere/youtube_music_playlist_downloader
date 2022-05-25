@@ -33,13 +33,13 @@ def check_ffmpeg():
         ]))
     return ffmpeg_available
 
-def getPlaylistInfo(url, reverse_playlist=False):
+def getPlaylistInfo(url, config):
     ytdl_opts = {
         "quiet": True,
         "geo_bypass": True,
         "dump_single_json": True,
         "extract_flat": True,
-        "playlistreverse": reverse_playlist
+        "playlistreverse": config["reverse_playlist"]
     }
     with YoutubeDL(ytdl_opts) as ytdl:
         info_dict = ytdl.extract_info(url, download=False)
@@ -57,7 +57,7 @@ def update_track_num(file_path, track_num):
 
     tags.save(v2_version=3)
     
-def generate_metadata(file_path, link, track_num, playlist_to_name: bool, playlist_name):
+def generate_metadata(file_path, link, track_num, config: dict, playlist_name):
     tags = ID3(file_path)
     
     # Generate only if metadata is missing
@@ -71,7 +71,8 @@ def generate_metadata(file_path, link, track_num, playlist_to_name: bool, playli
             info_dict = ytdl.extract_info(link, download=False)
             video_id = info_dict.get("id", None)
             video_title = info_dict.get("title", None)
-            uploader = info_dict.get("artist", None) or info_dict.get("uploader", None)
+            artist = info_dict.get("artist", None)
+            uploader = info_dict.get("uploader", None)
             album = info_dict.get("album", None)
             thumbnail_url = info_dict.get("thumbnail", None)
             
@@ -92,11 +93,14 @@ def generate_metadata(file_path, link, track_num, playlist_to_name: bool, playli
         # Generate tags
         tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
         tags.add(TIT2(encoding=3, text=video_title))
-        if album != None and playlist_to_name:
+        if config["playlist_to_name"] or album == None:
             tags.add(TALB(encoding=3, text=playlist_name))
-        elif album != None:
+        else:
             tags.add(TALB(encoding=3, text=album))
-        tags.add(TPE1(encoding=3, text=uploader))
+        if config["use_uploader"] or artist == None:
+            tags.add(TPE1(encoding=3, text=uploader))
+        else:
+            tags.add(TPE1(encoding=3, text=artist))
         tags.add(TRCK(encoding=3, text=str(track_num)))
 
         tags.save(v2_version=3)
@@ -140,9 +144,9 @@ def get_song_file_dict(album_name, print_errors=False):
         }
     return song_file_dict
 
-def generate_playlist(url, reverse_playlist: bool = False, playlist_to_name: bool = True):
+def generate_playlist(url, config: dict):
     # Get list of links in the playlist
-    playlist = getPlaylistInfo(url, reverse_playlist)
+    playlist = getPlaylistInfo(url, config)
     
     if "entries" not in playlist:
         raise Exception("No videos found in playlist")
@@ -183,7 +187,7 @@ def generate_playlist(url, reverse_playlist: bool = False, playlist_to_name: boo
                 os.rename(song_file_path, file_path)
 
             # Generate metadata just in case it is missing
-            generate_metadata(file_path, link, track_num, playlist_to_name, playlist_name)
+            generate_metadata(file_path, link, track_num, config, playlist_name)
             
             # Skip downloading audio if already downloaded
             print("Skipped downloading '{0}' ({1}/{2})".format(link, track_num, len(playlist_entries)))
@@ -197,7 +201,7 @@ def generate_playlist(url, reverse_playlist: bool = False, playlist_to_name: boo
                 # Locate new file by video id and update metadata
                 song_file_dict = get_song_file_dict(playlist_name)
                 file_path = song_file_dict[video_id]["file_path"]
-                generate_metadata(file_path, link, track_num, playlist_to_name, playlist_name)
+                generate_metadata(file_path, link, track_num, config, playlist_name)
             except Exception as e:
                 print("Unable to download video:", e)
 
@@ -248,29 +252,38 @@ if __name__ == "__main__":
         try:
             check_ffmpeg()
             url = input("Please enter the url of the playlist you wish to download: ")
-            reverse_playlist = False
+            config = {}
             while True:
                 response = input("Reverse playlist? (y/N): ").lower()
                 if response == "y":
-                    reverse_playlist = True
+                    config["reverse_playlist"] = True
                     break
                 elif response == "n" or response == "":
-                    reverse_playlist = False
+                    config["reverse_playlist"] = False
                     break
                 else:
                     print("Invalid response, please type 'y' or 'n'")
-            playlist_to_name = False
             while True:
                 response = input("Use playlist name for album? (Y/n): ").lower()
                 if response == "y" or response == "":
-                    playlist_to_name = True
+                    config["playlist_to_name"] = True
                     break
                 elif response == "n":
-                    playlist_to_name = False
+                    config["playlist_to_name"] = False
                     break
                 else:
                     print("Invalid response, please type 'y' or 'n'")
-            generate_playlist(url, reverse_playlist, playlist_to_name)
+            while True:
+                response = input("Use uploader instead of artist? (Y/n): ").lower()
+                if response == "y" or response == "":
+                    config["use_uploader"] = True
+                    break
+                elif response == "n":
+                    config["use_uploader"] = False
+                    break
+                else:
+                    print("Invalid response, please type 'y' or 'n'")
+            generate_playlist(url, config)
             input("Finished downloading. Press 'enter' to start again or close this window to finish.")
         except KeyboardInterrupt:
             print("\nCancelling...")
