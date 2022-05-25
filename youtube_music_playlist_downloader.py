@@ -95,7 +95,7 @@ def generate_metadata(file_path, link, track_num, playlist_to_name: bool, playli
         if album != None and playlist_to_name:
             tags.add(TALB(encoding=3, text=playlist_name))
         elif album != None:
-            tags.add(TALB(encoding=3, text=playlist_name))
+            tags.add(TALB(encoding=3, text=album))
         tags.add(TPE1(encoding=3, text=uploader))
         tags.add(TRCK(encoding=3, text=str(track_num)))
 
