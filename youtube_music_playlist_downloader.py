@@ -93,7 +93,7 @@ def generate_metadata(file_path, link, track_num, playlist_to_name: bool, playli
         tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
         tags.add(TIT2(encoding=3, text=video_title))
         if album != None and playlist_to_name:
-            tags.add(TALB(encoding=3, text=album))
+            tags.add(TALB(encoding=3, text=playlist_name))
         elif album != None:
             tags.add(TALB(encoding=3, text=playlist_name))
         tags.add(TPE1(encoding=3, text=uploader))
