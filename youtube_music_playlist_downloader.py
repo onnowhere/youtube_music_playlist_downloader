@@ -262,7 +262,7 @@ if __name__ == "__main__":
             playlist_to_name = False
             while True:
                 response = input("Use playlist name for album? (Y/n): ").lower()
-                if response == "y":
+                if response == "y" or response == "":
                     playlist_to_name = True
                     break
                 elif response == "n":
