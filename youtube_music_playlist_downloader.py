@@ -1,4 +1,5 @@
 # YouTube Music Playlist Downloader
+version = "1.1.0"
 
 import os
 import re
@@ -66,50 +67,70 @@ def update_track_num(file_path, track_num):
 def generate_metadata(file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool):
     tags = ID3(file_path)
     
-    # Generate only if metadata is missing
-    check_title = tags.get("TIT2")
-    if check_title is None or regenerate_metadata:
-        ytdl_opts = {
-            "quiet": True,
-            "geo_bypass": True
-        }
-        with YoutubeDL(ytdl_opts) as ytdl:
-            info_dict = ytdl.extract_info(link, download=False)
-            video_id = info_dict.get("id", None)
-            video_title = info_dict.get("title", None)
-            artist = info_dict.get("artist", None)
-            uploader = info_dict.get("uploader", None)
-            album = info_dict.get("album", None)
-            thumbnail_url = info_dict.get("thumbnail", None)
-            
-        print(f"Updating metadata for '{video_title}'...")
+    # Generate only if metadata is missing or if explicitly flagged
+    metadata_dict = {tag:tags.get(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB"]}
+    missing_metadata = any([value is None for value in metadata_dict.values()])
+    if missing_metadata or regenerate_metadata:
+        try:
+            # Get song metadata from youtube
+            ytdl_opts = {
+                "quiet": True,
+                "geo_bypass": True
+            }
+            with YoutubeDL(ytdl_opts) as ytdl:
+                info_dict = ytdl.extract_info(link, download=False)
+                video_id = info_dict.get("id", None)
+                video_title = info_dict.get("title", None)
+                artist = info_dict.get("artist", None)
+                uploader = info_dict.get("uploader", None)
+                album = info_dict.get("album", None)
+                thumbnail_url = info_dict.get("thumbnail", None)
+        except Exception as e:
+            print(f"Unable to gather information for song metadata: {e}")
+            return
 
-        # Generate thumbnail
-        img = Image.open(requests.get(thumbnail_url, stream=True).raw)
-        width, height = img.size
-        half_width = width / 2
-        half_height = height / 2
-        min_offset = min(half_width, half_height)
-        left = half_width - min_offset
-        right = half_width + min_offset
-        top = half_height - min_offset
-        bottom = half_height + min_offset
-        img_data = convert_to_jpeg(img.crop((left, top, right, bottom)))
+        try:
+            # Generate tags
+            print(f"Updating metadata for '{video_title}'...")
 
-        # Generate tags
-        tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
-        tags.add(TIT2(encoding=3, text=video_title))
-        if config["use_playlist_name"] or album == None:
-            tags.add(TALB(encoding=3, text=playlist_name))
-        else:
-            tags.add(TALB(encoding=3, text=album))
-        if config["use_uploader"] or artist == None:
-            tags.add(TPE1(encoding=3, text=uploader))
-        else:
-            tags.add(TPE1(encoding=3, text=artist))
-        tags.add(TRCK(encoding=3, text=str(track_num)))
+            # These tags will not be regenerated in case of config changes
+            if metadata_dict["TIT2"] is None:
+                tags.add(TIT2(encoding=3, text=video_title))
 
-        tags.save(v2_version=3)
+            if metadata_dict["APIC:Front cover"] is None:
+                # Generate thumbnail
+                img = Image.open(requests.get(thumbnail_url, stream=True).raw)
+                width, height = img.size
+                half_width = width / 2
+                half_height = height / 2
+                min_offset = min(half_width, half_height)
+                left = half_width - min_offset
+                right = half_width + min_offset
+                top = half_height - min_offset
+                bottom = half_height + min_offset
+                img_data = convert_to_jpeg(img.crop((left, top, right, bottom)))
+                tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
+
+            if metadata_dict["TRCK"] is None:
+                tags.add(TRCK(encoding=3, text=str(track_num)))
+
+            # These tags can be regenerated in case of config changes
+            if config["use_uploader"] or artist is None:
+                tags.add(TPE1(encoding=3, text=uploader))
+            else:
+                tags.add(TPE1(encoding=3, text=artist))
+
+            if config["use_playlist_name"]:
+                tags.add(TALB(encoding=3, text=playlist_name))
+            elif album is not None:
+                tags.add(TALB(encoding=3, text=album))
+            else:
+                tags.add(TALB(encoding=3, text="Unknown Album"))
+
+            tags.save(v2_version=3)
+
+        except Exception as e:
+            print(f"Unable to update metadata: {e}")
         
 def download_video(link, album_name, track_num):
     directory = os.path.join(os.getcwd(), album_name)
@@ -127,7 +148,7 @@ def download_video(link, album_name, track_num):
     })
 
     result = ydl.download([link])
-    return
+    return result
 
 def format_file_name(file_name):
     return re.sub(r"[\\/:*?\"<>|]", "_", file_name)
@@ -138,16 +159,18 @@ def get_song_file_dict(album_name, print_errors=False):
     for file_name in file_names:
         try:
             song_video_id = file_name[-15:-4] # 11 character video id
-            song_name = re.sub(r"^[0-9]+. ", "", file_name)
+            song_file_name = re.sub(r"^[0-9]+. ", "", file_name)
+            song_file_path = os.path.join(album_name, file_name)
             song_track_num = int(re.search(r"^[0-9]+", file_name).group())
         except:
             if print_errors:
                 print(f"Song file '{file_name}' is in an invalid format and will be ignored")
             continue
         song_file_dict[song_video_id] = {
-            "song_name": song_name,
-            "track_num": song_track_num,
-            "file_path": os.path.join(album_name, file_name)
+            "name": song_file_name[:song_file_name.rfind(song_video_id) - 1],
+            "file_name": song_file_name,
+            "file_path": song_file_path,
+            "track_num": song_track_num
         }
     return song_file_dict
 
@@ -167,7 +190,9 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
         if current_playlist_name is not None and current_playlist_name != playlist_name:
             print(f"Renaming playlist from '{current_playlist_name}' to '{playlist_name}'...")
             os.rename(current_playlist_name, playlist_name)
-            regenerate_metadata = True
+            if config["use_playlist_name"]:
+                # Regenerate metadata to update album tag with playlist name
+                regenerate_metadata = True
     else:
         # Create playlist folder
         Path(playlist_name).mkdir(parents=True, exist_ok=True)
@@ -176,11 +201,12 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
     song_file_dict = get_song_file_dict(playlist_name, print_errors=True)
         
     track_num = 1
+    skipped_videos = 0
     updated_video_ids = []
     
     # Download each item in the list
     for i, video_info in enumerate(playlist_entries):
-        track_num = i + 1
+        track_num = i + 1 - skipped_videos
         video_id = video_info["id"]
         link = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -188,13 +214,16 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
         song_file_info = song_file_dict.get(video_id)
         
         if song_file_info is not None:
-            # Song is already downloaded
-            song_name = song_file_info["song_name"]
-            song_track_num = song_file_info["track_num"]
+            # Skip downloading audio if already downloaded
+            print(f"Skipped downloading '{link}' ({track_num}/{len(playlist_entries) - skipped_videos})")
+
+            song_name = song_file_info["name"]
+            song_file_name = song_file_info["file_name"]
             song_file_path = song_file_info["file_path"]
+            song_track_num = song_file_info["track_num"]
 
             # Fix name if mismatching
-            file_name = f"{track_num}. {song_name}"
+            file_name = f"{track_num}. {song_file_name}"
             file_path = os.path.join(playlist_name, file_name)
             
             # Update song index if not matched
@@ -205,14 +234,23 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
 
             # Generate metadata just in case it is missing
             generate_metadata(file_path, link, track_num, playlist_name, config, regenerate_metadata)
-            
-            # Skip downloading audio if already downloaded
-            print(f"Skipped downloading '{link}' ({track_num}/{len(playlist_entries)})")
+
+            # Check if video is unavailable
+            if video_info["channel_id"] is None:
+                # Video title indicates availability of video such as '[Private Video]'
+                print(f"The previous song '{song_name}' is unavailable but a local copy exists - {video_info['title']}")
         else:
             try:
                 # Download audio if not downloaded
-                print(f"Downloading '{link}'... ({track_num}/{len(playlist_entries)})")
-                download_video(link, playlist_name, track_num)
+                print(f"Downloading '{link}'... ({track_num}/{len(playlist_entries) - skipped_videos})")
+
+                # Attempt to download video
+                result = download_video(link, playlist_name, track_num)
+                
+                # Check download failed and video is unavailable
+                if result != 0 and video_info["channel_id"] is None:
+                    # Video title indicates availability of video such as '[Private Video]'
+                    raise Exception(f"Video is unavailable - {video_info['title']}")
 
                 # Downloaded video title may not match playlist title due to translations
                 # Locate new file by video id and update metadata
@@ -221,15 +259,17 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
                 generate_metadata(file_path, link, track_num, playlist_name, config, False)
             except Exception as e:
                 print(f"Unable to download video: {e}")
+                skipped_videos += 1
 
     # Move songs that are missing (deleted/privated/etc.) to end of the list
     track_num = len(playlist_entries) + 1
     for video_id in song_file_dict.keys():
         if video_id not in updated_video_ids:
             song_file_info = song_file_dict[video_id]
-            song_name = song_file_info["song_name"]
-            song_track_num = song_file_info["track_num"]
+            song_name = song_file_info["name"]
+            song_file_name = song_file_info["file_name"]
             song_file_path = song_file_info["file_path"]
+            song_track_num = song_file_info["track_num"]
 
             if song_track_num == track_num:
                 track_num += 1
@@ -237,7 +277,7 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
 
             print(f"Moving '{song_name}' from position {song_track_num} to {track_num} due to missing video link...")
 
-            file_name = f"{track_num}. {song_name}"
+            file_name = f"{track_num}. {song_file_name}"
             file_path = os.path.join(playlist_name, file_name)
             
             update_track_num(song_file_path, track_num)
@@ -276,7 +316,7 @@ def get_bool_option_response(prompt, default: bool):
 
 if __name__ == "__main__":
     print("\n".join([
-        "YouTube Music Playlist Downloader",
+        "YouTube Music Playlist Downloader v" + version,
         "-----------------------------------------------------------",
         "This program automatically downloads & updates a local copy",
         "of any YouTube playlist in the form of a music album folder",
