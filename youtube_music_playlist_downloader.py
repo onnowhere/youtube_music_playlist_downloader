@@ -167,7 +167,7 @@ def get_song_file_dict(album_name, print_errors=False):
                 print(f"Song file '{file_name}' is in an invalid format and will be ignored")
             continue
         song_file_dict[song_video_id] = {
-            "name": song_file_name[:song_file_name.rfind(song_video_id) - 1],
+            "name": Path(song_file_name).stem,
             "file_name": song_file_name,
             "file_path": song_file_path,
             "track_num": song_track_num
@@ -262,7 +262,7 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
                 skipped_videos += 1
 
     # Move songs that are missing (deleted/privated/etc.) to end of the list
-    track_num = len(playlist_entries) + 1
+    track_num = len(playlist_entries) - skipped_videos + 1
     for video_id in song_file_dict.keys():
         if video_id not in updated_video_ids:
             song_file_info = song_file_dict[video_id]
