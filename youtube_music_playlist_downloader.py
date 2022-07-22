@@ -332,7 +332,8 @@ if __name__ == "__main__":
         "and your ffmpeg folder to the exclusions of your antivirus.",
         "-----------------------------------------------------------",
     ]))
-    
+
+    quit_enabled = False
     while True:
         try:
             check_ffmpeg()
@@ -341,9 +342,13 @@ if __name__ == "__main__":
             regenerate_metadata = False
             current_playlist_name = None
 
+            if quit_enabled:
+                print("(To exit, press Ctrl+C again)\n")
+
             playlists_data = get_existing_playlists(".")
             if len(playlists_data) > 0:
                 update = get_bool_option_response("Update an existing playlist?", default=False)
+                quit_enabled = False
                 
             if update:
                 # Update existing playlist
@@ -402,6 +407,7 @@ if __name__ == "__main__":
             else:
                 # Download new playlist
                 config["url"] = input("Please enter the URL of the playlist you wish to download: ")
+                quit_enabled = False
                 config["reverse_playlist"] = get_bool_option_response("Reverse playlist?", default=False)
                 config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
                 config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
@@ -409,7 +415,12 @@ if __name__ == "__main__":
             generate_playlist(config, update, regenerate_metadata, current_playlist_name)
             input("Finished downloading. Press 'enter' to start again or close this window to finish.")
         except KeyboardInterrupt:
+            if quit_enabled:
+                print("\nQuitting...")
+                break
+
             print("\nCancelling...")
+            quit_enabled = True
             continue
         except Exception as e:
             print(e)
