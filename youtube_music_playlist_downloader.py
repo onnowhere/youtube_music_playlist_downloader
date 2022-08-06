@@ -11,7 +11,7 @@ from PIL import Image
 from io import BytesIO
 from pathlib import Path
 from yt_dlp import YoutubeDL
-from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, USLT, error
+from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, WOAR, error
 
 # ID3 info:
 # APIC: picture
@@ -19,7 +19,7 @@ from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, USLT, error
 # TPE1: artist
 # TRCK: track number
 # TALB: album
-# USLT: lyric
+# WOAR: link
 
 def write_config(file, config: dict):
     with open(file, "w") as f:
@@ -68,8 +68,8 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
     tags = ID3(file_path)
     
     # Generate only if metadata is missing or if explicitly flagged
-    metadata_dict = {tag:tags.get(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB"]}
-    missing_metadata = any([value is None for value in metadata_dict.values()])
+    metadata_dict = {tag:tags.getall(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB", "WOAR"]}
+    missing_metadata = not all([value for value in metadata_dict.values()])
     if missing_metadata or regenerate_metadata:
         try:
             # Get song metadata from youtube
@@ -94,10 +94,10 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             print(f"Updating metadata for '{video_title}'...")
 
             # These tags will not be regenerated in case of config changes
-            if metadata_dict["TIT2"] is None:
+            if not metadata_dict["TIT2"]:
                 tags.add(TIT2(encoding=3, text=video_title))
 
-            if metadata_dict["APIC:Front cover"] is None:
+            if not metadata_dict["APIC:Front cover"]:
                 # Generate thumbnail
                 img = Image.open(requests.get(thumbnail_url, stream=True).raw)
                 width, height = img.size
@@ -111,8 +111,11 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 img_data = convert_to_jpeg(img.crop((left, top, right, bottom)))
                 tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
 
-            if metadata_dict["TRCK"] is None:
+            if not metadata_dict["TRCK"]:
                 tags.add(TRCK(encoding=3, text=str(track_num)))
+
+            if not metadata_dict["WOAR"]:
+                tags.add(WOAR(f"https://www.youtube.com/watch?v={video_id}"))
 
             # These tags can be regenerated in case of config changes
             if config["use_uploader"] or artist is None:
@@ -134,7 +137,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
         
 def download_video(link, album_name, track_num):
     directory = os.path.join(os.getcwd(), album_name)
-    ydl = YoutubeDL({
+    ytdl_opts = {
         'outtmpl': f'{directory}/{track_num}. %(title)s-%(id)s.%(ext)s',
         'ignoreerrors': True,
         'format': 'bestaudio/best',
@@ -145,9 +148,10 @@ def download_video(link, album_name, track_num):
         'geo_bypass': True,
         'quiet': True,
         'external_downloader_args': ['-loglevel', 'panic'],
-    })
+    }
+    with YoutubeDL(ytdl_opts) as ytdl:
+        result = ytdl.download([link])
 
-    result = ydl.download([link])
     return result
 
 def format_file_name(file_name):
