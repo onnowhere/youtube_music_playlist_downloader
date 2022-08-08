@@ -1,5 +1,6 @@
+#!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.1.0"
+version = "1.2.0"
 
 import os
 import re
@@ -10,16 +11,27 @@ import subprocess
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
-from yt_dlp import YoutubeDL
-from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, WOAR, error
+from yt_dlp import YoutubeDL, postprocessor
+from urllib.parse import urlparse, parse_qs
+from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, TDRC, WOAR, error
 
 # ID3 info:
-# APIC: picture
+# APIC: thumbnail
 # TIT2: title
 # TPE1: artist
 # TRCK: track number
 # TALB: album
+# TDRC: upload date
 # WOAR: link
+
+class FilePathCollector(postprocessor.common.PostProcessor):
+    def __init__(self):
+        super(FilePathCollector, self).__init__(None)
+        self.file_paths = []
+
+    def run(self, information):
+        self.file_paths.append(information['filepath'])
+        return [], information
 
 def write_config(file, config: dict):
     with open(file, "w") as f:
@@ -63,12 +75,15 @@ def update_track_num(file_path, track_num):
     tags.add(TRCK(encoding=3, text=str(track_num)))
 
     tags.save(v2_version=3)
-    
+
+def get_metadata_dict(tags):
+    return {tag:tags.getall(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB", "TDRC", "WOAR"]}
+
 def generate_metadata(file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool):
     tags = ID3(file_path)
     
     # Generate only if metadata is missing or if explicitly flagged
-    metadata_dict = {tag:tags.getall(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB", "WOAR"]}
+    metadata_dict = get_metadata_dict(tags)
     missing_metadata = not all([value for value in metadata_dict.values()])
     if missing_metadata or regenerate_metadata:
         try:
@@ -79,27 +94,27 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             }
             with YoutubeDL(ytdl_opts) as ytdl:
                 info_dict = ytdl.extract_info(link, download=False)
-                video_id = info_dict.get("id", None)
-                video_title = info_dict.get("title", None)
-                artist = info_dict.get("artist", None)
-                uploader = info_dict.get("uploader", None)
-                album = info_dict.get("album", None)
-                thumbnail_url = info_dict.get("thumbnail", None)
+                title = info_dict.get("title")
+                thumbnail = info_dict.get("thumbnail")
+                upload_date = info_dict.get("upload_date")
+                uploader = info_dict.get("uploader")
+                artist = info_dict.get("artist")
+                album = info_dict.get("album")
         except Exception as e:
             print(f"Unable to gather information for song metadata: {e}")
             return
 
         try:
             # Generate tags
-            print(f"Updating metadata for '{video_title}'...")
+            print(f"Updating metadata for '{title}'...")
 
             # These tags will not be regenerated in case of config changes
             if not metadata_dict["TIT2"]:
-                tags.add(TIT2(encoding=3, text=video_title))
+                tags.add(TIT2(encoding=3, text=title))
 
             if not metadata_dict["APIC:Front cover"]:
                 # Generate thumbnail
-                img = Image.open(requests.get(thumbnail_url, stream=True).raw)
+                img = Image.open(requests.get(thumbnail, stream=True).raw)
                 width, height = img.size
                 half_width = width / 2
                 half_height = height / 2
@@ -114,8 +129,11 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             if not metadata_dict["TRCK"]:
                 tags.add(TRCK(encoding=3, text=str(track_num)))
 
+            if not metadata_dict["TDRC"]:
+                tags.add(TDRC(encoding=3, text=time.strftime('%Y-%m-%d', time.strptime(upload_date, '%Y%m%d'))))
+
             if not metadata_dict["WOAR"]:
-                tags.add(WOAR(f"https://www.youtube.com/watch?v={video_id}"))
+                tags.add(WOAR(link))
 
             # These tags can be regenerated in case of config changes
             if config["use_uploader"] or artist is None:
@@ -134,11 +152,15 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
 
         except Exception as e:
             print(f"Unable to update metadata: {e}")
-        
-def download_video(link, album_name, track_num):
+
+def download_video(link, album_name, track_num, config: dict):
     directory = os.path.join(os.getcwd(), album_name)
+    name_format = config["name_format"]
+    if config["track_num_in_name"]:
+        name_format = f"{track_num}. {name_format}"
+
     ytdl_opts = {
-        'outtmpl': f'{directory}/{track_num}. %(title)s-%(id)s.%(ext)s',
+        'outtmpl': f'{directory}/{name_format}',
         'ignoreerrors': True,
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -150,33 +172,128 @@ def download_video(link, album_name, track_num):
         'external_downloader_args': ['-loglevel', 'panic'],
     }
     with YoutubeDL(ytdl_opts) as ytdl:
+        file_path_collector = FilePathCollector()
+        ytdl.add_post_processor(file_path_collector)
         result = ytdl.download([link])
+        file_path = file_path_collector.file_paths[0]
 
-    return result
+    return result, file_path
 
 def format_file_name(file_name):
     return re.sub(r"[\\/:*?\"<>|]", "_", file_name)
 
-def get_song_file_dict(album_name, print_errors=False):
-    file_names = [file_name for file_name in os.listdir(album_name) if file_name.endswith(".mp3")]
-    song_file_dict = {}
-    for file_name in file_names:
+def get_url_parameter(url, param):
+    return parse_qs(urlparse(url).query)[param][0]
+
+def get_video_id_from_metadata(tags):
+    links = tags.getall("WOAR")
+    if not links or len(links) > 1:
+        raise Exception("WOAR tag is in an invalid format")
+
+    return get_url_parameter(str(links[0]), "v")
+
+def get_song_file_path(playlist_name, video_id):
+    for file_name in os.listdir(playlist_name):
+        file_path = os.path.join(playlist_name, file_name)
+
         try:
-            song_video_id = file_name[-15:-4] # 11 character video id
-            song_file_name = re.sub(r"^[0-9]+. ", "", file_name)
-            song_file_path = os.path.join(album_name, file_name)
-            song_track_num = int(re.search(r"^[0-9]+", file_name).group())
+            tags = ID3(song_file_path)
         except:
-            if print_errors:
-                print(f"Song file '{file_name}' is in an invalid format and will be ignored")
+            # File is not considered a song file if it contains no metadata
             continue
+
+        try:
+            if get_video_id_from_metadata(tags) == video_id:
+                return file_path
+        except:
+            continue
+
+    return None
+
+def get_song_file_dict(playlist_name):
+    song_file_dict = {}
+    duplicate_files = {}
+    for file_name in os.listdir(playlist_name):
+        song_file_name = file_name
+        song_file_path = os.path.join(playlist_name, file_name)
+
+        try:
+            tags = ID3(song_file_path)
+        except:
+            # File is not considered a song file if it contains no metadata
+            continue
+
+        try:
+            song_video_id = get_video_id_from_metadata(tags)
+            song_name = tags.get("TIT2", "")
+            song_track_num = int(str(tags.get("TRCK", 0)))
+        except Exception as e:
+            print(f"Song file '{file_name}' is in an invalid format and will be ignored")
+            continue
+
+        if song_video_id in song_file_dict:
+            # Check for duplicate song files
+            if song_video_id not in duplicate_files:
+                duplicate_files[song_video_id] = [song_file_dict[song_video_id]['file_name']]
+
+            duplicate_files[song_video_id].append(song_file_name)
+            continue
+
         song_file_dict[song_video_id] = {
-            "name": Path(song_file_name).stem,
+            "name": song_name,
             "file_name": song_file_name,
             "file_path": song_file_path,
             "track_num": song_track_num
         }
+
+    if duplicate_files:
+        exception_strings = []
+        for song_video_id, file_names in duplicate_files.items():
+            exception_strings.append("\n".join([
+                f"The following files link to the same video id '{song_video_id}'",
+                "\n".join(["- " + file_name for file_name in file_names])
+            ]))
+
+        raise Exception("\n".join([
+            "",
+            "===========================================================",
+            "[ERROR] Duplicate song files found in this playlist folder!",
+            "===========================================================",
+            "\n\n".join(exception_strings),
+            "===========================================================",
+            "Please remove duplicate song files to resolve the conflict.",
+            "===========================================================",
+            ""
+        ]))
+
     return song_file_dict
+
+def setup_config(config: dict):
+    if "reverse_playlist" not in config:
+        config["reverse_playlist"] = False
+    if "use_playlist_name" not in config:
+        config["use_playlist_name"] = True
+    if "use_uploader" not in config:
+        config["use_uploader"] = True
+    if "name_format" not in config:
+        config["name_format"] = "%(title)s-%(id)s.%(ext)s"
+    if "track_num_in_name" not in config:
+        config["track_num_in_name"] = True
+
+    return config
+
+def generate_default_config(config: dict):
+    config = setup_config(config)
+
+    # Get list of links in the playlist
+    playlist = get_playlist_info(config)
+
+    playlist_name = format_file_name(playlist["title"])
+
+    # Create playlist folder
+    Path(playlist_name).mkdir(parents=True, exist_ok=True)
+
+    write_config(os.path.join(playlist_name, ".playlist_config.json"), config)
 
 def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, current_playlist_name=None):
     # Get list of links in the playlist
@@ -189,20 +306,38 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
     playlist_entries = playlist["entries"]
 
     # Prepare for downloading
-    if update:
-        # Check if playlist name changed
-        if current_playlist_name is not None and current_playlist_name != playlist_name:
-            print(f"Renaming playlist from '{current_playlist_name}' to '{playlist_name}'...")
-            os.rename(current_playlist_name, playlist_name)
-            if config["use_playlist_name"]:
-                # Regenerate metadata to update album tag with playlist name
-                regenerate_metadata = True
-    else:
-        # Create playlist folder
-        Path(playlist_name).mkdir(parents=True, exist_ok=True)
+    duplicate_name_index = 1
+    adjusted_playlist_name = playlist_name
+    while True:
+        if duplicate_name_index > 1:
+            adjusted_playlist_name = f"{playlist_name} ({duplicate_name_index})"
+
+        if update:
+            # Check if playlist name changed
+            if current_playlist_name is not None and current_playlist_name != adjusted_playlist_name:
+                try:
+                    os.rename(current_playlist_name, adjusted_playlist_name)
+                except FileExistsError:
+                    duplicate_name_index += 1
+                    continue
+
+                print(f"Renaming playlist from '{current_playlist_name}' to '{adjusted_playlist_name}'...")
+                if config["use_playlist_name"]:
+                    # Regenerate metadata to update album tag with playlist name
+                    regenerate_metadata = True
+        else:
+            # Create playlist folder
+            try:
+                Path(playlist_name).mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                duplicate_name_index += 1
+                continue
+        break
+    playlist_name = adjusted_playlist_name
+            
 
     write_config(os.path.join(playlist_name, ".playlist_config.json"), config)
-    song_file_dict = get_song_file_dict(playlist_name, print_errors=True)
+    song_file_dict = get_song_file_dict(playlist_name)
         
     track_num = 1
     skipped_videos = 0
@@ -227,13 +362,22 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
             song_track_num = song_file_info["track_num"]
 
             # Fix name if mismatching
-            file_name = f"{track_num}. {song_file_name}"
+            if config["track_num_in_name"]:
+                song_file_name = re.sub(r"^[0-9]+. ", "", song_file_name)
+                file_name = f"{track_num}. {song_file_name}"
+            else:
+                file_name = song_file_name
             file_path = os.path.join(playlist_name, file_name)
             
             # Update song index if not matched
             if song_track_num != track_num:
                 print(f"Reordering '{song_name}' from position {song_track_num} to {track_num}...")
                 update_track_num(song_file_path, track_num)
+
+            if song_file_path != file_path:
+                if song_track_num == track_num:
+                    # Track number in name was incorrectly modified manually by user
+                    print(f"Renaming incorrect file name from '{song_file_name}' to '{file_name}'")
                 os.rename(song_file_path, file_path)
 
             # Generate metadata just in case it is missing
@@ -249,17 +393,13 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
                 print(f"Downloading '{link}'... ({track_num}/{len(playlist_entries) - skipped_videos})")
 
                 # Attempt to download video
-                result = download_video(link, playlist_name, track_num)
+                result, file_path = download_video(link, playlist_name, track_num, config)
                 
                 # Check download failed and video is unavailable
                 if result != 0 and video_info["channel_id"] is None:
                     # Video title indicates availability of video such as '[Private Video]'
                     raise Exception(f"Video is unavailable - {video_info['title']}")
 
-                # Downloaded video title may not match playlist title due to translations
-                # Locate new file by video id and update metadata
-                song_file_dict = get_song_file_dict(playlist_name)
-                file_path = song_file_dict[video_id]["file_path"]
                 generate_metadata(file_path, link, track_num, playlist_name, config, False)
             except Exception as e:
                 print(f"Unable to download video: {e}")
@@ -275,32 +415,75 @@ def generate_playlist(config: dict, update: bool, regenerate_metadata: bool, cur
             song_file_path = song_file_info["file_path"]
             song_track_num = song_file_info["track_num"]
 
-            if song_track_num == track_num:
-                track_num += 1
-                continue
-
-            print(f"Moving '{song_name}' from position {song_track_num} to {track_num} due to missing video link...")
-
-            file_name = f"{track_num}. {song_file_name}"
+            if config["track_num_in_name"]:
+                song_file_name = re.sub(r"^[0-9]+. ", "", song_file_name)
+                file_name = f"{track_num}. {song_file_name}"
+            else:
+                file_name = song_file_name
             file_path = os.path.join(playlist_name, file_name)
-            
-            update_track_num(song_file_path, track_num)
-            os.rename(song_file_path, file_path)
+
+            if song_track_num != track_num:
+                print(f"Moving '{song_name}' from position {song_track_num} to {track_num} due to missing video link...")
+                update_track_num(song_file_path, track_num)
+
+            if song_file_path != file_path:
+                if song_track_num == track_num:
+                    # Track number in name was incorrectly modified manually by user
+                    print(f"Renaming incorrect file name from '{song_file_name}' to '{file_name}'")
+                os.rename(song_file_path, file_path)
+
             track_num += 1
     
     print("Download finished.")
 
 def get_existing_playlists(directory):
     playlists_data = []
+    playlists_name_dict = {}
+    duplicate_playlists = {}
     for playlist_name in next(os.walk(directory))[1]:
         config_file = os.path.join(directory, playlist_name, ".playlist_config.json")
         if os.path.exists(config_file):
+            with open(config_file, "r") as f:
+                config = json.load(f)
+
+            playlist_id = get_url_parameter(config["url"], "list")
+            if playlist_id in playlists_name_dict:
+                # Check for duplicate playlists
+                if playlist_id not in duplicate_playlists:
+                    duplicate_playlists[playlist_id] = [playlists_name_dict[playlist_id]]
+
+                duplicate_playlists[playlist_id].append(playlist_name)
+                continue
+
             playlist_data = {
                 "playlist_name": playlist_name,
                 "config_file": config_file,
                 "last_updated": time.strftime('%x %X', time.localtime(os.path.getmtime(config_file)))
             }
             playlists_data.append(playlist_data)
+            playlists_name_dict[playlist_id] = playlist_name
+
+    if duplicate_playlists:
+        exception_strings = []
+        for playlist_id, playlist_names in duplicate_playlists.items():
+            exception_strings.append("\n".join([
+                "The following playlist folders link to the same playlist id",
+                f"Duplicate Playlist ID: '{playlist_id}'",
+                "\n".join(["- " + playlist_name for playlist_name in playlist_names])
+            ]))
+
+        raise FileExistsError("\n".join([
+            "",
+            "===========================================================",
+            "[ERROR] Duplicate playlist folders found in this directory!",
+            "===========================================================",
+            "\n\n".join(exception_strings),
+            "===========================================================",
+            "Please remove duplicate playlists to resolve this conflict.",
+            "===========================================================",
+            ""
+        ]))
+
     return playlists_data
 
 def get_bool_option_response(prompt, default: bool):
@@ -317,6 +500,24 @@ def get_bool_option_response(prompt, default: bool):
             return False
         else:
             print("Invalid response, please type 'y' or 'n'.")
+
+def get_index_option_response(prompt, count: int):
+    if count <= 0:
+        raise Exception("Count must be greater than 0")
+
+    index = 0
+    while True:
+        selected_index = input(f"{prompt} (1 to {count}): ")
+        try:
+            index = int(selected_index) - 1
+            if index >= 0 and index < count:
+                break
+        except:
+            pass
+        
+        print("Invalid response, please enter a valid number.")
+
+    return index
 
 if __name__ == "__main__":
     print("\n".join([
@@ -337,54 +538,111 @@ if __name__ == "__main__":
         "-----------------------------------------------------------",
     ]))
 
-    quit_enabled = False
+    quit_enabled = True
+
+    OPTION_DOWNLOAD = "Download a playlist from YouTube"
+    OPTION_UPDATE   = "Update previously saved playlist"
+    OPTION_GENERATE = "Generate default playlist config"
+    OPTION_EXIT = "Exit"
+
     while True:
         try:
             check_ffmpeg()
             config = {}
-            update = False
+            quit_enabled = True
             regenerate_metadata = False
             current_playlist_name = None
 
-            if quit_enabled:
-                print("(To exit, press Ctrl+C again)\n")
+            options = [
+                OPTION_DOWNLOAD,
+                OPTION_GENERATE,
+                OPTION_EXIT
+            ]
 
-            playlists_data = get_existing_playlists(".")
+            while True:
+                try:
+                    playlists_data = get_existing_playlists(".")
+                except FileExistsError as e:
+                    print(e)
+                    quit_enabled = True
+                    input("Press 'Enter' to continue after resolving this conflict or close this window to finish.")
+                    continue
+                except KeyboardInterrupt as e:
+                    raise e
+                except:
+                    print(e)
+                    print("Failed to get a list of existing playlists")
+                break
             if len(playlists_data) > 0:
-                update = get_bool_option_response("Update an existing playlist?", default=False)
-                quit_enabled = False
-                
-            if update:
-                # Update existing playlist
-                playlists_list = []
-                for i, playlist_data in enumerate(playlists_data):
-                    playlists_list.append(f"{i + 1}. {playlist_data['playlist_name']} (Last Updated: {playlist_data['last_updated']})")
-                print("\n" + "\n".join(playlists_list) + "\n")
+                options.insert(1, OPTION_UPDATE)
 
-                playlist_data = {}
-                while True:
-                    update_index_raw = input(f"Enter a playlist number to update (1 to {len(playlists_data)}): ")
+            options_formatted = []
+            for i, option in enumerate(options):
+                options_formatted.append(f"{i + 1}. {option}")
+            print(f"\n" + "\n".join(options_formatted) + "\n")
+
+            selected_option = options[get_index_option_response("Select an option", len(options))]
+            quit_enabled = False
+
+            existing_config = None
+            update_existing = False
+            if selected_option == OPTION_DOWNLOAD:
+                # Download new playlist
+                config["url"] = input("Please enter the URL of the playlist you wish to download: ")
+
+                # Check if playlist is already downloaded
+                already_downloaded = False
+                for playlist_data in playlists_data:
                     try:
-                        update_index = int(update_index_raw) - 1
-                        if update_index >= 0 and update_index < len(playlists_data):
-                            playlist_data = playlists_data[update_index]
-                            break
-                    except:
-                        pass
-                    
-                    print("Invalid response, please enter a valid number.")
+                        with open(playlist_data["config_file"], "r") as f:
+                            existing_config = json.load(f)
 
-                current_playlist_name = playlist_data['playlist_name']
-                with open(playlist_data["config_file"], "r") as f:
-                    config = json.load(f)
+                        if get_url_parameter(existing_config["url"], "list") == get_url_parameter(config["url"], "list"):
+                            # Playlist already downloaded
+                            already_downloaded = True
+                            print("\n" + f"> {playlist_data['playlist_name']} (Last Updated: {playlist_data['last_updated']})" + "\n")
+                            update_existing = get_bool_option_response("This playlist is already downloaded. Update playlist?", default=True)
+                            if not update_existing:
+                                print("Not updating existing playlist.")
+                                quit_enabled = True
+                                input("Press 'Enter' to start again or close this window to finish.")
+                            else:
+                                current_playlist_name = playlist_data["playlist_name"]
+                            break
+                    except KeyboardInterrupt as e:
+                        raise e
+                    except:
+                        continue
+
+                if not already_downloaded and not update_existing:
+                    config["reverse_playlist"] = get_bool_option_response("Reverse playlist?", default=False)
+                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
+                    config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
+
+                    generate_playlist(config, False, regenerate_metadata, current_playlist_name)
+                    quit_enabled = True
+                    input("Finished downloading. Press 'Enter' to start again or close this window to finish.")
+
+            if selected_option == OPTION_UPDATE or update_existing:
+                # Update existing playlist
+                config = None
+                if update_existing:
+                    config = existing_config
+                else:
+                    playlists_list = []
+                    for i, playlist_data in enumerate(playlists_data):
+                        playlists_list.append(f"{i + 1}. {playlist_data['playlist_name']} (Last Updated: {playlist_data['last_updated']})")
+                    print("\n" + "\n".join(playlists_list) + "\n")
+
+                    update_index = get_index_option_response("Enter a playlist number to update", len(playlists_data))
+                    playlist_data = playlists_data[update_index]
+
+                    current_playlist_name = playlist_data["playlist_name"]
+                    with open(playlist_data["config_file"], "r") as f:
+                        config = json.load(f)
 
                 # In case settings were somehow missing
-                if 'reverse_playlist' not in config:
-                    config["reverse_playlist"] = False
-                if 'use_playlist_name' not in config:
-                    config["use_playlist_name"] = True
-                if 'use_uploader' not in config:
-                    config["use_uploader"] = True
+                config = setup_config(config)
 
                 print("\n" + "\n".join([
                     f"Selected playlist: '{current_playlist_name}'",
@@ -408,23 +666,46 @@ if __name__ == "__main__":
                     # Metadata needs to be regenerated if the settings have been changed
                     if config["use_playlist_name"] != last_use_playlist_name or config["use_uploader"] != last_use_uploader:
                         regenerate_metadata = True
-            else:
-                # Download new playlist
-                config["url"] = input("Please enter the URL of the playlist you wish to download: ")
-                quit_enabled = False
-                config["reverse_playlist"] = get_bool_option_response("Reverse playlist?", default=False)
-                config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
-                config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
 
-            generate_playlist(config, update, regenerate_metadata, current_playlist_name)
-            input("Finished downloading. Press 'enter' to start again or close this window to finish.")
+                generate_playlist(config, True, regenerate_metadata, current_playlist_name)
+                quit_enabled = True
+                input("Finished updating. Press 'Enter' to start again or close this window to finish.")
+            elif selected_option == OPTION_GENERATE:
+                # Generate default playlist config
+                config["url"] = input("Please enter the URL of the playlist to generate config for: ")
+
+                # Check if playlist is already downloaded
+                already_downloaded = False
+                for playlist_data in playlists_data:
+                    try:
+                        with open(playlist_data["config_file"], "r") as f:
+                            existing_config = json.load(f)
+
+                        if get_url_parameter(existing_config["url"], "list") == get_url_parameter(config["url"], "list"):
+                            print(f"Playlist '{playlist_data['playlist_name']}' is already downloaded.")
+                            quit_enabled = True
+                            input("Press 'Enter' to start again or close this window to finish.")
+                            already_downloaded = True
+                            break
+                    except KeyboardInterrupt as e:
+                        raise e
+                    except:
+                        continue
+
+                if not already_downloaded:
+                    generate_default_config(config)
+                    quit_enabled = True
+                    input("Finished generating default config. Press 'Enter' to start again or close this window to finish.")
+            elif selected_option == OPTION_EXIT:
+                # Exit
+                quit_enabled = True
+                raise KeyboardInterrupt
         except KeyboardInterrupt:
             if quit_enabled:
                 print("\nQuitting...")
                 break
 
-            print("\nCancelling...")
-            quit_enabled = True
+            print("\nCancelling...\n(To exit, select Exit or press Ctrl+C again)")
             continue
         except Exception as e:
             print(e)
