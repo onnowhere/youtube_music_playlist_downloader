@@ -1,4 +1,6 @@
-# 1.2.0 Updater for YouTube Music Playlist Downloader
+#!/usr/bin/env python3
+# YouTube Music Playlist Downloader
+# 1.2.0 Updater
 
 import os
 from mutagen.id3 import ID3, TIT2, WOAR
