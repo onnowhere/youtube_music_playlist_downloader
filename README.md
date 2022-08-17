@@ -36,6 +36,24 @@ If using the source files, double click the file to run with Python or run from 
 python youtube_music_playlist_downloader.py
 ```
 
+## Config
+A `.playlist_config.json` file is generated for all album folders and contains the following adjustable fields.
+
+
+### Options adjustable using the program
+- `url`: The URL of the playlist to download songs from (default: set during download)
+- `reverse_playlist`: Whether to reverse the order of songs in the playlist when downloading (default: `false`)
+- `use_playlist_name`: Whether to use the name of the playlist or the album name provided by YouTube where possible as the album name for downloaded songs (default: `true`)
+- `use_uploader`: Whether to use the uploader name or the artist name provided by YouTube where possible as the artist name for downloaded songs (default: `true`)
+
+
+### Hidden options adjustable in the config file directly
+- `name_format`: The name format used to generate file names in yt-dlp output template format (default: `"%(title)s-%(id)s.%(ext)s"`)
+- `track_num_in_name`: Whether to include the track number at the start of all file names (default: `true`)
+- `audio_format`: The audio format to be used by yt-dlp while downloading songs (default: `"bestaudio/best"`)
+- `audio_codec`: The audio codec to be used by yt-dlp while downloading songs (default: `"mp3"`)
+- `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)
+
 ## License
 Licensed under MIT (See [LICENSE](LICENSE))
 
