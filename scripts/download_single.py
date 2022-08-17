@@ -21,6 +21,9 @@ def generate_metadata(file_path, link):
     tags.add(WOAR(link))
     tags.save(v2_version=3)
 
+def get_url_path(url):
+    return urlparse(url).path.rpartition('/')[2]
+
 def get_url_parameter(url, param):
     return parse_qs(urlparse(url).query)[param][0]
 
@@ -47,7 +50,11 @@ def download_video(link):
         file_path = file_path_collector.file_paths[0]
     return result, file_path
 
-video_id = get_url_parameter(input("Link: "), "v")
+url = input("Link: ")
+if "youtu.be" in url:
+    video_id = get_url_path(url)
+else:
+    video_id = get_url_parameter(url, "v")
 link = f"https://www.youtube.com/watch?v={video_id}"
 result, file_path = download_video(link)
 generate_metadata(file_path, link)
