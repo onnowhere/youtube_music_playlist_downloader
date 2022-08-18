@@ -117,9 +117,10 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                     info_dict_with_audio_ext["ext"] = config["audio_codec"]
                     force_update_file_name = ytdl.prepare_filename(info_dict_with_audio_ext)
 
-                title = info_dict.get("title")
                 thumbnail = info_dict.get("thumbnail")
                 upload_date = info_dict.get("upload_date")
+                title = info_dict.get("title")
+                track = info_dict.get("track")
                 uploader = info_dict.get("uploader")
                 artist = info_dict.get("artist")
                 album = info_dict.get("album")
@@ -132,9 +133,6 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             print(f"Updating metadata for '{title}'...")
 
             # These tags will not be regenerated in case of config changes
-            if not metadata_dict["TIT2"]:
-                tags.add(TIT2(encoding=3, text=title))
-
             if not metadata_dict["APIC:Front cover"]:
                 # Generate thumbnail
                 img = Image.open(requests.get(thumbnail, stream=True).raw)
@@ -159,6 +157,11 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 tags.add(WOAR(link))
 
             # These tags can be regenerated in case of config changes
+            if config["use_title"] or track is None:
+                tags.add(TIT2(encoding=3, text=title))
+            else:
+                tags.add(TIT2(encoding=3, text=track))
+
             if config["use_uploader"] or artist is None:
                 tags.add(TPE1(encoding=3, text=uploader))
             else:
@@ -296,26 +299,24 @@ def get_song_file_dict(playlist_name):
     return song_file_dict
 
 def setup_config(config: dict):
-    if "url" not in config:
-        config["url"] = ""
-    if "reverse_playlist" not in config:
-        config["reverse_playlist"] = False
-    if "use_playlist_name" not in config:
-        config["use_playlist_name"] = True
-    if "use_uploader" not in config:
-        config["use_uploader"] = True
-    if "name_format" not in config:
-        config["name_format"] = "%(title)s-%(id)s.%(ext)s"
-    if "track_num_in_name" not in config:
-        config["track_num_in_name"] = True
-    if "audio_format" not in config:
-        config["audio_format"] = "bestaudio/best"
-    if "audio_codec" not in config:
-        config["audio_codec"] = "mp3"
-    if "verbose" not in config:
-        config["verbose"] = False
+    new_config = {
+        "url": "",
+        "reverse_playlist": False,
+        "use_title": True,
+        "use_uploader": True,
+        "use_playlist_name": True,
+        "name_format": "%(title)s-%(id)s.%(ext)s",
+        "track_num_in_name": True,
+        "audio_format": "bestaudio/best",
+        "audio_codec": "mp3",
+        "verbose": False
+    }
 
-    return config
+    for key, value in new_config.items():
+        if key in config:
+            new_config[key] = config[key]
+
+    return new_config
 
 def generate_default_config(config: dict, config_file_name: str):
     config = setup_config(config)
@@ -706,8 +707,9 @@ if __name__ == "__main__":
 
                 if not already_downloaded and not update_existing:
                     config["reverse_playlist"] = get_bool_option_response("Reverse playlist?", default=False)
-                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
+                    config["use_title"] = get_bool_option_response("Use title instead of track name?: ", default=True)
                     config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
+                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
 
                     generate_playlist(config, config_file_name, False, False, regenerate_metadata, False, current_playlist_name)
                     quit_enabled = True
@@ -740,8 +742,9 @@ if __name__ == "__main__":
                     "",
                     f"Playlist settings",
                     f"- Reverse playlist: {config['reverse_playlist']}",
+                    f"- Use title instead of track name: {config['use_title']}",
+                    f"- Use uploader instead of artist: {config['use_uploader']}",
                     f"- Use playlist name for album: {config['use_playlist_name']}",
-                    f"- Use uploader instead of artist: {config['use_uploader']}"
                 ]) + "\n")
 
                 if single_playlist:
@@ -751,15 +754,17 @@ if __name__ == "__main__":
                 quit_enabled = False
 
                 if modify_settings:
-                    last_use_playlist_name = config["use_playlist_name"]
+                    last_use_title = config["use_title"]
                     last_use_uploader = config["use_uploader"]
+                    last_use_playlist_name = config["use_playlist_name"]
 
                     config["reverse_playlist"] = get_bool_option_response("Reverse playlist?", default=False)
-                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
+                    config["use_title"] = get_bool_option_response("Use title instead of track name?", default=True)
                     config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
+                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
 
                     # Metadata needs to be regenerated if the settings have been changed
-                    if config["use_playlist_name"] != last_use_playlist_name or config["use_uploader"] != last_use_uploader:
+                    if config["use_title"] != last_use_title or config["use_uploader"] != last_use_uploader or config["use_playlist_name"] != last_use_playlist_name:
                         regenerate_metadata = True
 
                 force_update = get_bool_option_response("Force update all names and metadata?", default=False)

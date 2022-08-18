@@ -43,8 +43,9 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 ### Options adjustable using the program
 - `url`: The URL of the playlist to download songs from (default: set during download)
 - `reverse_playlist`: Whether to reverse the order of songs in the playlist when downloading (default: `false`)
-- `use_playlist_name`: Whether to use the name of the playlist or the album name provided by YouTube where possible as the album name for downloaded songs (default: `true`)
-- `use_uploader`: Whether to use the uploader name or the artist name provided by YouTube where possible as the artist name for downloaded songs (default: `true`)
+- `use_title`: Whether to use the title or track name provided by YouTube where possible as the title for downloaded songs (default: `true`)
+- `use_uploader`: Whether to use the uploader or the artist name provided by YouTube where possible as the artist for downloaded songs (default: `true`)
+- `use_playlist_name`: Whether to use the playlist or the album name provided by YouTube where possible as the album for downloaded songs (default: `true`)
 
 
 ### Hidden options adjustable in the config file directly
