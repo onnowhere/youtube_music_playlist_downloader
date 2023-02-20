@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.2.0"
+version = "1.2.1"
 
 import os
 import re
@@ -125,8 +125,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 artist = info_dict.get("artist")
                 album = info_dict.get("album")
         except Exception as e:
-            print(f"Unable to gather information for song metadata: {e}")
-            return
+            raise Exception(f"Unable to gather information for song metadata: {e}")
 
         try:
             # Generate tags
@@ -175,9 +174,9 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 tags.add(TALB(encoding=3, text="Unknown Album"))
 
             tags.save(v2_version=3)
-
         except Exception as e:
-            print(f"Unable to update metadata: {e}")
+            raise Exception(f"Unable to update song metadata: {e}")
+
     return force_update_file_name
 
 def download_video(link, playlist_name, track_num, config: dict):
@@ -419,17 +418,20 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
             if song_file_path != file_path:
                 if song_track_num == track_num:
                     # Track number in name was incorrectly modified manually by user
-                    print(f"Renaming incorrect file name from '{song_file_name}' to '{file_name}'")
+                    print(f"Renaming incorrect file name from '{Path(song_file_path).stem}' to '{Path(file_path).stem}'")
                 os.rename(song_file_path, file_path)
 
             # Generate metadata just in case it is missing
-            force_update_file_name = generate_metadata(file_path, link, track_num, playlist["title"], config, regenerate_metadata, force_update)
-            if force_update:
-                force_update_file_path = os.path.join(playlist_name, force_update_file_name)
-                if file_path != force_update_file_path:
-                    # Track name needs updating to proper format
-                    print(f"Renaming incorrect file name from '{song_file_name}' to '{file_name}'")
-                os.rename(file_path, force_update_file_path)
+            try:
+                force_update_file_name = generate_metadata(file_path, link, track_num, playlist["title"], config, regenerate_metadata, force_update)
+                if force_update:
+                    force_update_file_path = os.path.join(playlist_name, force_update_file_name)
+                    if file_path != force_update_file_path:
+                        # Track name needs updating to proper format
+                        print(f"Renaming incorrect file name from '{Path(file_path).stem}' to '{Path(force_update_file_path).stem}'")
+                    os.rename(file_path, force_update_file_path)
+            except Exception as e:
+                print(e)
 
             # Check if video is unavailable
             if video_info["channel_id"] is None:
