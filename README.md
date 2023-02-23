@@ -36,6 +36,18 @@ If using the source files, double click the file to run with Python or run from 
 python youtube_music_playlist_downloader.py
 ```
 
+## Build
+To build the standalone executable, you must have Python and `pyinstaller`. Once you do, follow the steps below.
+
+```
+python -m pip install -U pyinstaller -r requirements.txt
+git submodule init
+git submodule update
+python scripts/build.py
+```
+
+On some systems, you may need to use `py` or `python3` instead of `python`.
+
 ## Config
 A `.playlist_config.json` file is generated for all album folders and contains the following adjustable fields.
 

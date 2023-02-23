@@ -1,0 +1,3 @@
+[submodule "scripts/yt-dlp-master"]
+	path = scripts/yt-dlp-master
+	url = https://github.com/yt-dlp/yt-dlp.git
