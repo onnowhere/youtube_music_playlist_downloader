@@ -66,6 +66,9 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 - `track_num_in_name`: Whether to include the track number at the start of all file names (default: `true`)
 - `audio_format`: The audio format to be used by yt-dlp while downloading songs (default: `"bestaudio/best"`)
 - `audio_codec`: The audio codec to be used by yt-dlp while downloading songs (default: `"mp3"`)
+- `audio_quality`: The audio quality to be used by yt-dlp while converting audio formats (default: `"5"`)
+- `cookie_file`: The path to the cookie file for yt-dlp to use (default: `""`)
+- `cookies_from_browser`: The name of the browser to load cookies from for yt-dlp to use (default: `""`)
 - `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)
 
 ## License

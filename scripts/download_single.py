@@ -37,6 +37,7 @@ def download_video(link):
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
+            "preferredquality": "5",
         }],
         "geo_bypass": True,
         "quiet": True,

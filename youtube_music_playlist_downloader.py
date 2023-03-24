@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.2.1"
+version = "1.2.2"
 
 import os
 import re
@@ -58,6 +58,8 @@ def get_playlist_info(config: dict):
         "geo_bypass": True,
         "dump_single_json": True,
         "extract_flat": True,
+        "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
+        "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
         "playlistreverse": config["reverse_playlist"]
     }
     with YoutubeDL(ytdl_opts) as ytdl:
@@ -79,8 +81,47 @@ def update_track_num(file_path, track_num):
 def get_metadata_dict(tags):
     return {tag:tags.getall(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB", "TDRC", "WOAR"]}
 
+def get_song_info(track_num, link, config: dict):
+    # Get song metadata from youtube
+    name_format = config["name_format"]
+    if config["track_num_in_name"]:
+        name_format = f"{track_num}. {name_format}"
+
+    ytdl_opts = {
+        "quiet": True,
+        "geo_bypass": True,
+        "outtmpl": name_format,
+        "format": config["audio_format"],
+        "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
+        "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": config["audio_codec"],
+            "preferredquality": config["audio_quality"],
+        }]
+    }
+
+    info_dict = {}
+    with YoutubeDL(ytdl_opts) as ytdl:
+        info_dict = ytdl.extract_info(link, download=False)
+
+    return info_dict
+
 def generate_metadata(file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool, force_update: bool):
-    tags = ID3(file_path)
+    try:
+        tags = ID3(file_path)
+    except:
+        # Unsupported audio codec for metadata
+        force_update_file_name = ""
+        if force_update:
+            try:
+                info_dict = get_song_info(track_num, link, config)
+                info_dict_with_audio_ext = dict(info_dict)
+                info_dict_with_audio_ext["ext"] = config["audio_codec"]
+                force_update_file_name = ytdl.prepare_filename(info_dict_with_audio_ext)
+            except Exception as e:
+                raise Exception(f"Unable to gather information for updated file name: {e}")
+        return force_update_file_name
 
     # Generate only if metadata is missing or if explicitly flagged
     metadata_dict = get_metadata_dict(tags)
@@ -94,36 +135,20 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
 
     if regenerate_metadata or force_update or not all([value for value in metadata_dict.values()]):
         try:
-            # Get song metadata from youtube
-            name_format = config["name_format"]
-            if config["track_num_in_name"]:
-                name_format = f"{track_num}. {name_format}"
+            info_dict = get_song_info(track_num, link, config)
 
-            ytdl_opts = {
-                "quiet": True,
-                "geo_bypass": True,
-                "outtmpl": name_format,
-                "format": config["audio_format"],
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": config["audio_codec"],
-                }]
-            }
-            with YoutubeDL(ytdl_opts) as ytdl:
-                info_dict = ytdl.extract_info(link, download=False)
-                
-                if force_update:
-                    info_dict_with_audio_ext = dict(info_dict)
-                    info_dict_with_audio_ext["ext"] = config["audio_codec"]
-                    force_update_file_name = ytdl.prepare_filename(info_dict_with_audio_ext)
+            if force_update:
+                info_dict_with_audio_ext = dict(info_dict)
+                info_dict_with_audio_ext["ext"] = config["audio_codec"]
+                force_update_file_name = ytdl.prepare_filename(info_dict_with_audio_ext)
 
-                thumbnail = info_dict.get("thumbnail")
-                upload_date = info_dict.get("upload_date")
-                title = info_dict.get("title")
-                track = info_dict.get("track")
-                uploader = info_dict.get("uploader")
-                artist = info_dict.get("artist")
-                album = info_dict.get("album")
+            thumbnail = info_dict.get("thumbnail")
+            upload_date = info_dict.get("upload_date")
+            title = info_dict.get("title")
+            track = info_dict.get("track")
+            uploader = info_dict.get("uploader")
+            artist = info_dict.get("artist")
+            album = info_dict.get("album")
         except Exception as e:
             raise Exception(f"Unable to gather information for song metadata: {e}")
 
@@ -179,7 +204,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
 
     return force_update_file_name
 
-def download_video(link, playlist_name, track_num, config: dict):
+def download_song(link, playlist_name, track_num, config: dict):
     directory = os.path.join(os.getcwd(), playlist_name)
     name_format = config["name_format"]
     if config["track_num_in_name"]:
@@ -189,9 +214,12 @@ def download_video(link, playlist_name, track_num, config: dict):
         "outtmpl": f"{directory}/{name_format}",
         "ignoreerrors": True,
         "format": config["audio_format"],
+        "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
+        "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": config["audio_codec"],
+            "preferredquality": config["audio_quality"],
         }],
         "geo_bypass": True
     }
@@ -309,6 +337,9 @@ def setup_config(config: dict):
         "track_num_in_name": True,
         "audio_format": "bestaudio/best",
         "audio_codec": "mp3",
+        "audio_quality": "5",
+        "cookie_file": "",
+        "cookies_from_browser": "",
         "verbose": False
     }
 
@@ -435,7 +466,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                         print(f"Renaming incorrect file name from '{Path(file_path).stem}' to '{Path(force_update_file_path).stem}'")
                     os.rename(file_path, force_update_file_path)
             except Exception as e:
-                print(e)
+                print(f"Unable to update metadata: {e}")
 
             # Check if video is unavailable
             if video_info["channel_id"] is None:
@@ -447,7 +478,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                 print(f"Downloading '{link}'... ({track_num}/{len(playlist_entries) - skipped_videos})")
 
                 # Attempt to download video
-                result, file_path = download_video(link, playlist_name, track_num, config)
+                result, file_path = download_song(link, playlist_name, track_num, config)
                 
                 # Check download failed and video is unavailable
                 if result != 0 and video_info["channel_id"] is None:
@@ -608,7 +639,7 @@ if __name__ == "__main__":
     OPTION_DOWNLOAD = "Download a playlist from YouTube"
     OPTION_UPDATE   = "Update previously saved playlist"
     OPTION_GENERATE = "Generate default playlist config"
-    OPTION_CHANGE   = "Change change target folder path"
+    OPTION_CHANGE   = "Change current working directory"
     OPTION_EXIT     = "Exit"
 
     single_playlist = os.path.exists(config_file_name)
@@ -721,7 +752,7 @@ if __name__ == "__main__":
 
                     generate_playlist(config, config_file_name, False, False, regenerate_metadata, False, current_playlist_name)
                     quit_enabled = True
-                    input("Finished downloading. Press 'Enter' to start again or close this window to finish.")
+                    input("Finished downloading. Press 'Enter' to return to main menu or close this window to finish.")
 
             if selected_option == OPTION_UPDATE or update_existing:
                 # Update existing playlist
@@ -779,7 +810,7 @@ if __name__ == "__main__":
 
                 generate_playlist(config, config_file_name, True, force_update, regenerate_metadata, single_playlist, current_playlist_name)
                 quit_enabled = True
-                input("Finished updating. Press 'Enter' to start again or close this window to finish.")
+                input("Finished updating. Press 'Enter' to return to main menu or close this window to finish.")
             elif selected_option == OPTION_GENERATE:
                 # Generate default playlist config
                 config["url"] = input("Please enter the URL of the playlist to generate config for: ")
@@ -794,7 +825,7 @@ if __name__ == "__main__":
                         if get_url_parameter(existing_config["url"], "list") == get_url_parameter(config["url"], "list"):
                             print(f"Playlist '{playlist_data['playlist_name']}' is already downloaded.")
                             quit_enabled = True
-                            input("Press 'Enter' to start again or close this window to finish.")
+                            input("Press 'Enter' to return to main menu or close this window to finish.")
                             already_downloaded = True
                             break
                     except KeyboardInterrupt as e:
@@ -805,10 +836,10 @@ if __name__ == "__main__":
                 if not already_downloaded:
                     generate_default_config(config, config_file_name)
                     quit_enabled = True
-                    input("Finished generating default config. Press 'Enter' to start again or close this window to finish.")
+                    input("Finished generating default config. Press 'Enter' to return to main menu or close this window to finish.")
             elif selected_option == OPTION_CHANGE:
-                # Change target folder path
-                target_path = input("Enter path of folder to target: ")
+                # Change current working directory
+                target_path = input("Enter path of target playlists folder to change to: ")
                 os.chdir(target_path)
             elif selected_option == OPTION_EXIT:
                 # Exit
