@@ -304,6 +304,7 @@ def setup_config(config: dict):
         "use_title": True,
         "use_uploader": True,
         "use_playlist_name": True,
+        "sync_folder_name": True,
         "name_format": "%(title)s-%(id)s.%(ext)s",
         "track_num_in_name": True,
         "audio_format": "bestaudio/best",
@@ -356,6 +357,9 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
         if update:
             # Check if playlist name changed
             if current_playlist_name is not None and current_playlist_name != adjusted_playlist_name:
+                if not config["sync_folder_name"]:
+                    adjusted_playlist_name = current_playlist_name
+                    break
                 try:
                     os.rename(current_playlist_name, adjusted_playlist_name)
                 except FileExistsError:
@@ -604,7 +608,8 @@ if __name__ == "__main__":
     OPTION_DOWNLOAD = "Download a playlist from YouTube"
     OPTION_UPDATE   = "Update previously saved playlist"
     OPTION_GENERATE = "Generate default playlist config"
-    OPTION_EXIT = "Exit"
+    OPTION_CHANGE   = "Change change target folder path"
+    OPTION_EXIT     = "Exit"
 
     single_playlist = os.path.exists(config_file_name)
     if single_playlist:
@@ -626,6 +631,7 @@ if __name__ == "__main__":
             options = [
                 OPTION_DOWNLOAD,
                 OPTION_GENERATE,
+                OPTION_CHANGE,
                 OPTION_EXIT
             ]
 
@@ -698,7 +704,7 @@ if __name__ == "__main__":
                             if not update_existing:
                                 print("Not updating existing playlist.")
                                 quit_enabled = True
-                                input("Press 'Enter' to start again or close this window to finish.")
+                                input("Press 'Enter' to return to main menu or close this window to finish.")
                             else:
                                 current_playlist_name = playlist_data["playlist_name"]
                             break
@@ -709,9 +715,9 @@ if __name__ == "__main__":
 
                 if not already_downloaded and not update_existing:
                     config["reverse_playlist"] = get_bool_option_response("Reverse playlist?", default=False)
-                    config["use_title"] = get_bool_option_response("Use title instead of track name?: ", default=True)
+                    config["use_title"] = get_bool_option_response("Use title instead of track name?", default=True)
                     config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
-                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?: ", default=True)
+                    config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?", default=True)
 
                     generate_playlist(config, config_file_name, False, False, regenerate_metadata, False, current_playlist_name)
                     quit_enabled = True
@@ -739,7 +745,7 @@ if __name__ == "__main__":
                 config = setup_config(config)
 
                 print("\n" + "\n".join([
-                    f"Selected playlist: '{current_playlist_name}'",
+                    f"Selected playlist: {current_playlist_name}",
                     f"URL: {config['url']}",
                     "",
                     f"Playlist settings",
@@ -800,6 +806,10 @@ if __name__ == "__main__":
                     generate_default_config(config, config_file_name)
                     quit_enabled = True
                     input("Finished generating default config. Press 'Enter' to start again or close this window to finish.")
+            elif selected_option == OPTION_CHANGE:
+                # Change target folder path
+                target_path = input("Enter path of folder to target: ")
+                os.chdir(target_path)
             elif selected_option == OPTION_EXIT:
                 # Exit
                 quit_enabled = True

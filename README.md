@@ -61,6 +61,7 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 
 
 ### Hidden options adjustable in the config file directly
+- `sync_folder_name`: Whether to automatically sync the name of the playlist folder to the YouTube playlist name (default: `true`)
 - `name_format`: The name format used to generate file names in yt-dlp output template format (default: `"%(title)s-%(id)s.%(ext)s"`)
 - `track_num_in_name`: Whether to include the track number at the start of all file names (default: `true`)
 - `audio_format`: The audio format to be used by yt-dlp while downloading songs (default: `"bestaudio/best"`)
