@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.2.2"
+version = "1.2.3"
 
 import os
 import re
@@ -67,9 +67,9 @@ def get_playlist_info(config: dict):
 
     return info_dict
 
-def convert_to_jpeg(image):
+def convert_image_type(image, image_type):
     with BytesIO() as f:
-        image.convert("RGB").save(f, format="JPEG")
+        image.convert("RGB").save(f, format=image_type)
         return f.getvalue()
 
 def update_track_num(file_path, track_num):
@@ -78,11 +78,31 @@ def update_track_num(file_path, track_num):
 
     tags.save(v2_version=3)
 
-def get_metadata_dict(tags):
-    return {tag:tags.getall(tag) for tag in ["TIT2", "APIC:Front cover", "TRCK", "TPE1", "TALB", "TDRC", "WOAR"]}
+def get_metadata_map():
+    return {
+        "title": "TIT2",
+        "cover": "APIC:Front cover",
+        "track": "TRCK",
+        "artist": "TPE1",
+        "album": "TALB",
+        "date": "TDRC",
+        "url": "WOAR"
+    }
 
-def get_song_info(track_num, link, config: dict):
-    # Get song metadata from youtube
+def get_metadata_dict(tags):
+    return {tag:tags.getall(tag) for tag in get_metadata_map().values()}
+
+def valid_metadata(config, metadata_dict):
+    include_metadata = config["include_metadata"].copy()
+
+    # WOAR URL is required to identify video
+    include_metadata["url"] = True
+
+    selected_tags = [value for key, value in get_metadata_map().items() if include_metadata[key]]
+    return all([value for tag, value in metadata_dict.items() if tag in selected_tags])
+
+def get_song_info_ytdl(track_num, config: dict):
+    # Get ytdl for song info
     name_format = config["name_format"]
     if config["track_num_in_name"]:
         name_format = f"{track_num}. {name_format}"
@@ -102,10 +122,12 @@ def get_song_info(track_num, link, config: dict):
     }
 
     info_dict = {}
-    with YoutubeDL(ytdl_opts) as ytdl:
-        info_dict = ytdl.extract_info(link, download=False)
+    return YoutubeDL(ytdl_opts)
 
-    return info_dict
+def get_song_info(track_num, link, config: dict):
+    # Get song metadata from youtube
+    ytdl = get_song_info_ytdl(track_num, config)
+    return ytdl.extract_info(link, download=False)
 
 def generate_metadata(file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool, force_update: bool):
     try:
@@ -118,7 +140,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 info_dict = get_song_info(track_num, link, config)
                 info_dict_with_audio_ext = dict(info_dict)
                 info_dict_with_audio_ext["ext"] = config["audio_codec"]
-                force_update_file_name = ytdl.prepare_filename(info_dict_with_audio_ext)
+                force_update_file_name = get_song_info_ytdl(track_num, config).prepare_filename(info_dict_with_audio_ext)
             except Exception as e:
                 raise Exception(f"Unable to gather information for updated file name: {e}")
         return force_update_file_name
@@ -130,17 +152,18 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
     if force_update:
         for tag in metadata_dict.keys():
             if tag != "WOAR":
+                # WOAR URL is required to identify video
                 tags.delall(tag)
                 metadata_dict[tag] = []
 
-    if regenerate_metadata or force_update or not all([value for value in metadata_dict.values()]):
+    if regenerate_metadata or force_update or not valid_metadata(config, metadata_dict):
         try:
             info_dict = get_song_info(track_num, link, config)
 
             if force_update:
                 info_dict_with_audio_ext = dict(info_dict)
                 info_dict_with_audio_ext["ext"] = config["audio_codec"]
-                force_update_file_name = ytdl.prepare_filename(info_dict_with_audio_ext)
+                force_update_file_name = get_song_info_ytdl(track_num, config).prepare_filename(info_dict_with_audio_ext)
 
             thumbnail = info_dict.get("thumbnail")
             upload_date = info_dict.get("upload_date")
@@ -155,11 +178,32 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
         try:
             # Generate tags
             print(f"Updating metadata for '{title}'...")
+            include_metadata = config["include_metadata"]
 
             # These tags will not be regenerated in case of config changes
-            if not metadata_dict["APIC:Front cover"]:
+            if not metadata_dict["APIC:Front cover"] and include_metadata["cover"]:
                 # Generate thumbnail
                 img = Image.open(requests.get(thumbnail, stream=True).raw)
+
+                # Ensure aspect ratio
+                target_ratio = [16, 9]
+                width, height = img.size
+                width_ratio = width / target_ratio[0]
+                height_ratio = height / target_ratio[1]
+                if width_ratio > height_ratio:
+                    half_width = width / 2
+                    min_offset = (height_ratio * target_ratio[0]) / 2
+                    left = half_width - min_offset
+                    right = half_width + min_offset
+                    img = img.crop([left, 0, right, height])
+                elif height_ratio > width_ratio:
+                    half_height = height / 2
+                    min_offset = (width_ratio * target_ratio[1]) / 2
+                    top = half_height - min_offset
+                    bottom = half_height + min_offset
+                    img = img.crop([0, top, width, bottom])
+
+                # Crop to square
                 width, height = img.size
                 half_width = width / 2
                 half_height = height / 2
@@ -168,35 +212,38 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 right = half_width + min_offset
                 top = half_height - min_offset
                 bottom = half_height + min_offset
-                img_data = convert_to_jpeg(img.crop((left, top, right, bottom)))
-                tags.add(APIC(3, "image/jpeg", 3, "Front cover", img_data))
+                img_data = convert_image_type(img.crop([left, top, right, bottom]), config["image_format"])
+                tags.add(APIC(3, f"image/{config['image_format']}", 3, "Front cover", img_data))
 
-            if not metadata_dict["TRCK"]:
+            if not metadata_dict["TRCK"] and include_metadata["track"]:
                 tags.add(TRCK(encoding=3, text=str(track_num)))
 
-            if not metadata_dict["TDRC"]:
+            if not metadata_dict["TDRC"] and include_metadata["date"]:
                 tags.add(TDRC(encoding=3, text=time.strftime('%Y-%m-%d', time.strptime(upload_date, '%Y%m%d'))))
 
             if not metadata_dict["WOAR"]:
                 tags.add(WOAR(link))
 
             # These tags can be regenerated in case of config changes
-            if config["use_title"] or track is None:
-                tags.add(TIT2(encoding=3, text=title))
-            else:
-                tags.add(TIT2(encoding=3, text=track))
+            if include_metadata["title"]:
+                if config["use_title"] or track is None:
+                    tags.add(TIT2(encoding=3, text=title))
+                else:
+                    tags.add(TIT2(encoding=3, text=track))
 
-            if config["use_uploader"] or artist is None:
-                tags.add(TPE1(encoding=3, text=uploader))
-            else:
-                tags.add(TPE1(encoding=3, text=artist))
+            if include_metadata["artist"]:
+                if config["use_uploader"] or artist is None:
+                    tags.add(TPE1(encoding=3, text=uploader))
+                else:
+                    tags.add(TPE1(encoding=3, text=artist))
 
-            if config["use_playlist_name"]:
-                tags.add(TALB(encoding=3, text=playlist_name))
-            elif album is not None:
-                tags.add(TALB(encoding=3, text=album))
-            else:
-                tags.add(TALB(encoding=3, text="Unknown Album"))
+            if include_metadata["album"]:
+                if config["use_playlist_name"]:
+                    tags.add(TALB(encoding=3, text=playlist_name))
+                elif album is not None:
+                    tags.add(TALB(encoding=3, text=album))
+                else:
+                    tags.add(TALB(encoding=3, text="Unknown Album"))
 
             tags.save(v2_version=3)
         except Exception as e:
@@ -282,7 +329,7 @@ def get_song_file_dict(playlist_name):
 
         try:
             song_video_id = get_video_id_from_metadata(tags)
-            song_name = tags.get("TIT2", "")
+            song_name = tags.get("TIT2", song_file_name)
             song_track_num = int(str(tags.get("TRCK", 0)))
         except Exception as e:
             print(f"Song file '{file_name}' is in an invalid format and will be ignored")
@@ -338,9 +385,11 @@ def setup_config(config: dict):
         "audio_format": "bestaudio/best",
         "audio_codec": "mp3",
         "audio_quality": "5",
+        "image_format": "jpeg",
         "cookie_file": "",
         "cookies_from_browser": "",
-        "verbose": False
+        "verbose": False,
+        "include_metadata": {key:True for key in get_metadata_map().keys() if key != "url"}
     }
 
     for key, value in new_config.items():
@@ -446,7 +495,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
             file_path = os.path.join(playlist_name, file_name)
             
             # Update song index if not matched
-            if song_track_num != track_num:
+            if song_track_num != track_num and config["include_metadata"]["track"]:
                 print(f"Reordering '{song_name}' from position {song_track_num} to {track_num}...")
                 update_track_num(song_file_path, track_num)
 
@@ -507,7 +556,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                 file_name = song_file_name
             file_path = os.path.join(playlist_name, file_name)
 
-            if song_track_num != track_num:
+            if song_track_num != track_num and config["include_metadata"]["track"]:
                 print(f"Moving '{song_name}' from position {song_track_num} to {track_num} due to missing video link...")
                 update_track_num(song_file_path, track_num)
 
@@ -638,6 +687,7 @@ if __name__ == "__main__":
 
     OPTION_DOWNLOAD = "Download a playlist from YouTube"
     OPTION_UPDATE   = "Update previously saved playlist"
+    OPTION_MODIFY   = "Modify previously saved playlist"
     OPTION_GENERATE = "Generate default playlist config"
     OPTION_CHANGE   = "Change current working directory"
     OPTION_EXIT     = "Exit"
@@ -706,6 +756,7 @@ if __name__ == "__main__":
                     break
                 if len(playlists_data) > 0:
                     options.insert(1, OPTION_UPDATE)
+                    options.insert(2, OPTION_MODIFY)
 
                 options_formatted = []
                 for i, option in enumerate(options):
@@ -776,7 +827,37 @@ if __name__ == "__main__":
                 config = setup_config(config)
 
                 print("\n" + "\n".join([
-                    f"Selected playlist: {current_playlist_name}",
+                    f"Updating playlist: {current_playlist_name}",
+                    f"URL: {config['url']}",
+                ]) + "\n")
+
+                quit_enabled = False
+                generate_playlist(config, config_file_name, True, False, False, single_playlist, current_playlist_name)
+                quit_enabled = True
+                input("Finished updating. Press 'Enter' to return to main menu or close this window to finish.")
+            elif selected_option == OPTION_MODIFY:
+                # Modify existing playlist
+                config = None
+                if update_existing:
+                    config = existing_config
+                else:
+                    playlists_list = []
+                    for i, playlist_data in enumerate(playlists_data):
+                        playlists_list.append(f"{i + 1}. {playlist_data['playlist_name']} (Last Updated: {playlist_data['last_updated']})")
+                    print("\n" + "\n".join(playlists_list) + "\n")
+
+                    update_index = get_index_option_response("Enter a playlist number to update", len(playlists_data))
+                    playlist_data = playlists_data[update_index]
+
+                    current_playlist_name = playlist_data["playlist_name"]
+                    with open(playlist_data["config_file"], "r") as f:
+                        config = json.load(f)
+
+                # In case settings were somehow missing
+                config = setup_config(config)
+
+                print("\n" + "\n".join([
+                    f"Updating playlist: {current_playlist_name}",
                     f"URL: {config['url']}",
                     "",
                     f"Playlist settings",
@@ -789,7 +870,7 @@ if __name__ == "__main__":
                 if single_playlist:
                     quit_enabled = True
 
-                modify_settings = get_bool_option_response("Modify playlist settings?", default=False)
+                modify_settings = get_bool_option_response("Change playlist settings?", default=False)
                 quit_enabled = False
 
                 if modify_settings:

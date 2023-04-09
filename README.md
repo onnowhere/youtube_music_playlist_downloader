@@ -60,16 +60,24 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 - `use_playlist_name`: Whether to use the playlist or the album name provided by YouTube where possible as the album for downloaded songs (default: `true`)
 
 
-### Hidden options adjustable in the config file directly
+### Additional options adjustable through the config file
 - `sync_folder_name`: Whether to automatically sync the name of the playlist folder to the YouTube playlist name (default: `true`)
 - `name_format`: The name format used to generate file names in yt-dlp output template format (default: `"%(title)s-%(id)s.%(ext)s"`)
 - `track_num_in_name`: Whether to include the track number at the start of all file names (default: `true`)
-- `audio_format`: The audio format to be used by yt-dlp while downloading songs (default: `"bestaudio/best"`)
-- `audio_codec`: The audio codec to be used by yt-dlp while downloading songs (default: `"mp3"`)
-- `audio_quality`: The audio quality to be used by yt-dlp while converting audio formats (default: `"5"`)
-- `cookie_file`: The path to the cookie file for yt-dlp to use (default: `""`)
-- `cookies_from_browser`: The name of the browser to load cookies from for yt-dlp to use (default: `""`)
+- `audio_format`: The audio format used by yt-dlp when downloading songs (default: `"bestaudio/best"`)
+- `audio_codec`: The audio codec used by yt-dlp when downloading songs (default: `"mp3"`)
+- `audio_quality`: The audio quality used by yt-dlp when converting audio formats (default: `"5"`)
+- `image_format`: The cover art image format - for better quality but larger file size, use `"png"` (default: `"jpeg"`)
+- `cookie_file`: The path to the cookie file for yt-dlp to refer to (default: `""`)
+- `cookies_from_browser`: The name of the browser for yt-dlp to load cookies from (default: `""`)
 - `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)
+- `include_metadata`: A mapping of metadata fields and whether to include them in song metadata
+    - `title`: Include title metadata (default: `true`)
+    - `cover`: Include cover art (default: `true`)
+    - `track`: Include track number metadata (default: `true`)
+    - `artist`: Include artist metadata (default: `true`)
+    - `album`: Include album metadata (default: `true`)
+    - `date`: Include date metadata (default: `true`)
 
 ## License
 Licensed under MIT (See [LICENSE](LICENSE))
