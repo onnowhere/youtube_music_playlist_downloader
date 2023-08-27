@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.2.3"
+version = "1.2.4"
 
 import os
 import re
@@ -393,7 +393,17 @@ def setup_config(config: dict):
     }
 
     for key, value in new_config.items():
-        if key in config:
+        if isinstance(value, dict):
+            sub_dict = {}
+            if key in config and isinstance(config[key], dict):
+                sub_dict = config[key]
+
+            for sub_key in value:
+                if sub_key in sub_dict:
+                    value[sub_key] == sub_dict[sub_key]
+
+            new_config[key] = value
+        elif key in config:
             new_config[key] = config[key]
 
     return new_config
@@ -706,6 +716,7 @@ if __name__ == "__main__":
             selected_option = None
             existing_config = None
             update_existing = False
+            modify_existing = False
             regenerate_metadata = False
             current_playlist_name = None
 
@@ -722,7 +733,7 @@ if __name__ == "__main__":
                     try:
                         with open(config_file_name, "r") as f:
                             config = json.load(f)
-                        update_existing = True
+                        modify_existing = True
                         existing_config = config
                         current_playlist_name = os.path.basename(os.getcwd())
                     except (KeyboardInterrupt, EOFError) as e:
@@ -835,10 +846,11 @@ if __name__ == "__main__":
                 generate_playlist(config, config_file_name, True, False, False, single_playlist, current_playlist_name)
                 quit_enabled = True
                 input("Finished updating. Press 'Enter' to return to main menu or close this window to finish.")
-            elif selected_option == OPTION_MODIFY:
+
+            if selected_option == OPTION_MODIFY or modify_existing:
                 # Modify existing playlist
                 config = None
-                if update_existing:
+                if modify_existing:
                     config = existing_config
                 else:
                     playlists_list = []
@@ -892,7 +904,8 @@ if __name__ == "__main__":
                 generate_playlist(config, config_file_name, True, force_update, regenerate_metadata, single_playlist, current_playlist_name)
                 quit_enabled = True
                 input("Finished updating. Press 'Enter' to return to main menu or close this window to finish.")
-            elif selected_option == OPTION_GENERATE:
+
+            if selected_option == OPTION_GENERATE:
                 # Generate default playlist config
                 config["url"] = input("Please enter the URL of the playlist to generate config for: ")
 
@@ -918,11 +931,13 @@ if __name__ == "__main__":
                     generate_default_config(config, config_file_name)
                     quit_enabled = True
                     input("Finished generating default config. Press 'Enter' to return to main menu or close this window to finish.")
-            elif selected_option == OPTION_CHANGE:
+
+            if selected_option == OPTION_CHANGE:
                 # Change current working directory
                 target_path = input("Enter path of target playlists folder to change to: ")
                 os.chdir(target_path)
-            elif selected_option == OPTION_EXIT:
+
+            if selected_option == OPTION_EXIT:
                 # Exit
                 quit_enabled = True
                 raise KeyboardInterrupt
