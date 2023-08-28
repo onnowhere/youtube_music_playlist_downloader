@@ -6,7 +6,7 @@ of any YouTube playlist in the form of a music album folder
 - Existing albums are updated with any new or missing songs
 - Songs no longer in the playlist are moved to end of album
 - Song metadata is automatically generated using video info
-- Metadata includes Title, Artists, Album, and Track Number
+- Metadata includes Title/Artists/Album/Lyrics/Track Number
 - Cover art for songs are created by using video thumbnails
 
 [NOTE] This program and ffmpeg may be blocked by antivirus.
@@ -68,6 +68,7 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 - `audio_codec`: The audio codec used by yt-dlp when downloading songs (default: `"mp3"`)
 - `audio_quality`: The audio quality used by yt-dlp when converting audio formats (default: `"5"`)
 - `image_format`: The cover art image format - for better quality but larger file size, use `"png"` (default: `"jpeg"`)
+- `lyrics_lang`: The language code to generate lyrics for - leave empty for automatic selection (default: `""`)
 - `cookie_file`: The path to the cookie file for yt-dlp to refer to (default: `""`)
 - `cookies_from_browser`: The name of the browser for yt-dlp to load cookies from (default: `""`)
 - `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)
@@ -78,6 +79,10 @@ A `.playlist_config.json` file is generated for all album folders and contains t
     - `artist`: Include artist metadata (default: `true`)
     - `album`: Include album metadata (default: `true`)
     - `date`: Include date metadata (default: `true`)
+    - `lyrics`: Include lyrics metadata (default: `true`)
+- `overrides`: A mapping of custom individual song config overrides - additional entries can be added for each song
+    - `[video_id]`: A mapping of overridden config values for this specific song - a unique alphanumeric YouTube video id
+        - `...`: All config values from above are valid here with exception to `url`, `reverse_playlist`, `sync_folder_name`, and `overrides`
 
 ## License
 Licensed under MIT (See [LICENSE](LICENSE))

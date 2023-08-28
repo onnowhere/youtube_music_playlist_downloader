@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.2.4"
+version = "1.3.0"
 
 import os
 import re
+import copy
 import json
 import time
 import requests
@@ -11,9 +12,10 @@ import subprocess
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
+from langcodes import Language
 from yt_dlp import YoutubeDL, postprocessor
 from urllib.parse import urlparse, parse_qs
-from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, TDRC, WOAR, error
+from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, TDRC, WOAR, SYLT, USLT, error
 
 # ID3 info:
 # APIC: thumbnail
@@ -23,6 +25,8 @@ from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, TDRC, WOAR, error
 # TALB: album
 # TDRC: upload date
 # WOAR: link
+# SYLT: synced lyrics
+# USLT: unsynced lyrics
 
 class FilePathCollector(postprocessor.common.PostProcessor):
     def __init__(self):
@@ -80,17 +84,21 @@ def update_track_num(file_path, track_num):
 
 def get_metadata_map():
     return {
-        "title": "TIT2",
-        "cover": "APIC:Front cover",
-        "track": "TRCK",
-        "artist": "TPE1",
-        "album": "TALB",
-        "date": "TDRC",
-        "url": "WOAR"
+        "title": ["TIT2"],
+        "cover": ["APIC:Front cover"],
+        "track": ["TRCK"],
+        "artist": ["TPE1"],
+        "album": ["TALB"],
+        "date": ["TDRC"],
+        "url": ["WOAR"],
+        "lyrics": ["SYLT", "USLT"]
     }
 
+def flatten(l):
+    return [item for sublist in l for item in sublist]
+
 def get_metadata_dict(tags):
-    return {tag:tags.getall(tag) for tag in get_metadata_map().values()}
+    return {tag:tags.getall(tag) for tag in flatten(get_metadata_map().values())}
 
 def valid_metadata(config, metadata_dict):
     include_metadata = config["include_metadata"].copy()
@@ -98,7 +106,7 @@ def valid_metadata(config, metadata_dict):
     # WOAR URL is required to identify video
     include_metadata["url"] = True
 
-    selected_tags = [value for key, value in get_metadata_map().items() if include_metadata[key]]
+    selected_tags = flatten([value for key, value in get_metadata_map().items() if include_metadata[key]])
     return all([value for tag, value in metadata_dict.items() if tag in selected_tags])
 
 def get_song_info_ytdl(track_num, config: dict):
@@ -114,6 +122,8 @@ def get_song_info_ytdl(track_num, config: dict):
         "format": config["audio_format"],
         "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
         "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
+        "writesubtitles": True,
+        "allsubtitles": True,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": config["audio_codec"],
@@ -172,6 +182,8 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             uploader = info_dict.get("uploader")
             artist = info_dict.get("artist")
             album = info_dict.get("album")
+            subtitles = info_dict.get("subtitles")
+            requested_subtitles = info_dict.get("requested_subtitles")
         except Exception as e:
             raise Exception(f"Unable to gather information for song metadata: {e}")
 
@@ -223,6 +235,79 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
 
             if not metadata_dict["WOAR"]:
                 tags.add(WOAR(link))
+
+            if include_metadata["lyrics"] and (not metadata_dict["SYLT"] or not metadata_dict["USLT"]):
+                synced_lyrics = []
+                unsynced_lyrics = []
+                lang = "en"
+                lyrics_lang = config["lyrics_lang"]
+
+                if subtitles is not None and len(subtitles) > 0:
+                    subtitles_url = None
+                    try:
+                        if lyrics_lang == "":
+                            requested_lang = next(iter(requested_subtitles))
+                            subtitles_url = next(sub for sub in subtitles[requested_lang] if sub["ext"] == "json3")["url"]
+                            lang = requested_lang
+                        else:
+                            for requested_lang in requested_subtitles.keys():
+                                if requested_lang == lyrics_lang:
+                                    subtitles_url = next(sub for sub in subtitles[requested_lang] if sub["ext"] == "json3")["url"]
+                                    lang = requested_lang
+                                    break
+                            if subtitles_url is None:
+                                subtitles_url = None
+                                print(f"Skipped updating lyrics: No lyrics found for language '{lyrics_lang}'. Available languages: {available_languages_str}")
+                    except:
+                        subtitles_url = None
+
+                    if subtitles_url is not None:
+                        try:
+                            content = json.loads(requests.get(subtitles_url, stream=True).text)
+
+                            last_timestamp = -1
+                            last_lines = []
+
+                            for event in content["events"]:
+                                timestamp = event["tStartMs"]
+                                line = ""
+                                for seg in event["segs"]:
+                                    line += seg["utf8"]
+                                # Remove invalid characters
+                                line = line.replace("\u200b", "").replace("\u200c", "")
+
+                                if (timestamp - last_timestamp) < 1000 and line.strip() in last_lines:
+                                    # Skip if line is repeated too quickly
+                                    last_timestamp = timestamp
+                                    continue
+
+                                if timestamp == last_timestamp:
+                                    # Append line into previous line if same timestamp has multiple lines
+                                    lyrics_line = list(synced_lyrics[-1])
+                                    lyrics_line[0] += "\n" + line
+                                    synced_lyrics[-1] = tuple(lyrics_line)
+
+                                    unsynced_lyrics[-1] += "\n" + line
+
+                                    last_lines.append(line.strip())
+                                else:
+                                    synced_lyrics.append((line, timestamp))
+                                    unsynced_lyrics.append(line)
+                                    last_lines = [line.strip()]
+                                last_timestamp = timestamp
+                        except Exception as e:
+                            print(f"Unable to get lyrics: {e}")
+                elif lyrics_lang != "":
+                    print(f"Skipped updating lyrics: No lyrics found for language '{lyrics_lang}'. Available languages: NONE")
+
+                lang = Language.get(lang).to_alpha3()
+                if len(synced_lyrics) == 0:
+                    synced_lyrics = [("Lyrics unavailable", 0)]
+                if len(unsynced_lyrics) == 0:
+                    unsynced_lyrics = ["Lyrics unavailable"]
+
+                tags.add(SYLT(encoding=3, lang=lang, format=2, type=1, text=synced_lyrics))
+                tags.add(USLT(encoding=3, lang=lang, text="\n".join(unsynced_lyrics)))
 
             # These tags can be regenerated in case of config changes
             if include_metadata["title"]:
@@ -372,39 +457,67 @@ def get_song_file_dict(playlist_name):
 
     return song_file_dict
 
+def setup_include_metadata_config():
+    return {key:True for key in get_metadata_map().keys() if key != "url"}
+
+def copy_config(src_config: dict, dst_config: dict):
+    # Copy modified src_config values to the dst_config
+    for key, value in dst_config.items():
+        if isinstance(value, dict):
+            sub_dict = {}
+            if key in src_config and isinstance(src_config[key], dict):
+                sub_dict = src_config[key]
+
+            for sub_key in value:
+                if sub_key in sub_dict:
+                    value[sub_key] = sub_dict[sub_key]
+
+            dst_config[key] = value
+        elif key in src_config:
+            dst_config[key] = src_config[key]
+
 def setup_config(config: dict):
     new_config = {
         "url": "",
+        "sync_folder_name": True,
         "reverse_playlist": False,
         "use_title": True,
         "use_uploader": True,
         "use_playlist_name": True,
-        "sync_folder_name": True,
         "name_format": "%(title)s-%(id)s.%(ext)s",
         "track_num_in_name": True,
         "audio_format": "bestaudio/best",
         "audio_codec": "mp3",
         "audio_quality": "5",
         "image_format": "jpeg",
+        "lyrics_lang": "",
         "cookie_file": "",
         "cookies_from_browser": "",
         "verbose": False,
-        "include_metadata": {key:True for key in get_metadata_map().keys() if key != "url"}
+        "include_metadata": setup_include_metadata_config()
     }
 
-    for key, value in new_config.items():
-        if isinstance(value, dict):
-            sub_dict = {}
-            if key in config and isinstance(config[key], dict):
-                sub_dict = config[key]
+    # Copy config values to the new config
+    copy_config(config, new_config)
 
-            for sub_key in value:
-                if sub_key in sub_dict:
-                    value[sub_key] == sub_dict[sub_key]
+    # Create example song config override
+    config_copy = copy.deepcopy(new_config)
+    excluded_override_keys = ["url", "sync_folder_name", "reverse_playlist", "overrides"]
+    for excluded_override_key in excluded_override_keys:
+        if excluded_override_key in config_copy:
+            config_copy.pop(excluded_override_key)
+    new_config["overrides"] = {
+        "EXAMPLE_VIDEO_ID_HERE": config_copy
+    }
 
-            new_config[key] = value
-        elif key in config:
-            new_config[key] = config[key]
+    # Setup individual song config overrides
+    if "overrides" in config:
+        for key, value in config["overrides"].items():
+            if key != "EXAMPLE_VIDEO_ID_HERE" and isinstance(value, dict):
+                for excluded_override_key in excluded_override_keys:
+                    if excluded_override_key in value:
+                        value.pop(excluded_override_key)
+                new_config["overrides"][key] = value
 
     return new_config
 
@@ -413,7 +526,6 @@ def generate_default_config(config: dict, config_file_name: str):
 
     # Get list of links in the playlist
     playlist = get_playlist_info(config)
-
     playlist_name = format_file_name(playlist["title"])
 
     # Create playlist folder
@@ -421,7 +533,7 @@ def generate_default_config(config: dict, config_file_name: str):
 
     write_config(os.path.join(playlist_name, config_file_name), config)
 
-def generate_playlist(config: dict, config_file_name: str, update: bool, force_update: bool, regenerate_metadata: bool, single_playlist: bool, current_playlist_name=None):
+def generate_playlist(config: dict, config_file_name: str, update: bool, force_update: bool, regenerate_metadata: bool, single_playlist: bool, current_playlist_name=None, track_num_to_update=None):
     # Get list of links in the playlist
     playlist = get_playlist_info(config)
     
@@ -469,24 +581,62 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                 continue
         break
     playlist_name = adjusted_playlist_name
-            
 
+    base_config = copy.deepcopy(config)
     write_config(os.path.join(playlist_name, config_file_name), config)
     song_file_dict = get_song_file_dict(playlist_name)
         
     track_num = 1
     skipped_videos = 0
     updated_video_ids = []
-    
+
     # Download each item in the list
+    config_overridden = False
     for i, video_info in enumerate(playlist_entries):
         track_num = i + 1 - skipped_videos
         video_id = video_info["id"]
         link = f"https://www.youtube.com/watch?v={video_id}"
 
+        # Track number for updating a single song is not matched
+        if track_num_to_update is not None and track_num != track_num_to_update:
+            continue
+
         updated_video_ids.append(video_id)
         song_file_info = song_file_dict.get(video_id)
-        
+
+        # Temporarily replace config with individual song config override
+        if video_id in base_config["overrides"]:
+            config = copy.deepcopy(base_config)
+            copy_config(base_config["overrides"][video_id], config)
+            config_overridden = True
+        elif config_overridden:
+            config = copy.deepcopy(base_config)
+            config_overridden = False
+
+        # Update metadata for a single song
+        if track_num_to_update is not None:
+            if song_file_info is not None:
+                song_name = song_file_info["name"]
+                song_file_name = song_file_info["file_name"]
+                song_track_num = song_file_info["track_num"]
+
+                file_path = os.path.join(playlist_name, song_file_name)
+                try:
+                    # Update all metadata but do not update the track number to avoid resorting playlist
+                    force_update_file_name = generate_metadata(file_path, link, song_track_num, playlist["title"], config, regenerate_metadata, True)
+                    force_update_file_path = os.path.join(playlist_name, force_update_file_name)
+                    if file_path != force_update_file_path:
+                        # Track name needs updating to proper format
+                        print(f"Renaming incorrect file name from '{Path(file_path).stem}' to '{Path(force_update_file_path).stem}'")
+                        os.rename(file_path, force_update_file_path)
+                except Exception as e:
+                    print(f"Unable to update metadata: {e}")
+            else:
+                print(f"Unable to update metadata for '{link}': This song has not been downloaded yet, please update the playlist first")
+
+            # Updating single song finished
+            return
+
         if song_file_info is not None:
             # Skip downloading audio if already downloaded
             print(f"Skipped downloading '{link}' ({track_num}/{len(playlist_entries) - skipped_videos})")
@@ -516,6 +666,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                 os.rename(song_file_path, file_path)
 
             # Generate metadata just in case it is missing
+            video_unavailable = False
             try:
                 force_update_file_name = generate_metadata(file_path, link, track_num, playlist["title"], config, regenerate_metadata, force_update)
                 if force_update:
@@ -523,14 +674,19 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                     if file_path != force_update_file_path:
                         # Track name needs updating to proper format
                         print(f"Renaming incorrect file name from '{Path(file_path).stem}' to '{Path(force_update_file_path).stem}'")
-                    os.rename(file_path, force_update_file_path)
+                        os.rename(file_path, force_update_file_path)
             except Exception as e:
                 print(f"Unable to update metadata: {e}")
+                if "This video is not available" in str(e):
+                    video_unavailable = True
 
             # Check if video is unavailable
-            if video_info["channel_id"] is None:
-                # Video title indicates availability of video such as '[Private Video]'
-                print(f"The previous song '{song_name}' is unavailable but a local copy exists - {video_info['title']}")
+            if video_info["channel_id"] is None or video_unavailable:
+                error_text = f"The previous song '{song_name}' is unavailable but a local copy exists"
+                if not video_unavailable:
+                    # Video title indicates availability of video such as '[Private Video]'
+                    error_text += f" - {video_info['title']}"
+                print(error_text)
         else:
             try:
                 # Download audio if not downloaded
@@ -549,9 +705,23 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                 print(f"Unable to download video: {e}")
                 skipped_videos += 1
 
+    # Song not found for single song update
+    if track_num_to_update is not None:
+        print(f"Unable to update metadata for song #'{track_num_to_update}': This song could not be found or is unavailable, please update the playlist first")
+        return
+
     # Move songs that are missing (deleted/privated/etc.) to end of the list
     track_num = len(playlist_entries) - skipped_videos + 1
     for video_id in song_file_dict.keys():
+        # Temporarily replace config with individual song config override
+        if video_id in base_config["overrides"]:
+            config = copy.deepcopy(base_config)
+            copy_config(base_config["overrides"][video_id], config)
+            config_overridden = True
+        elif config_overridden:
+            config = copy.deepcopy(base_config)
+            config_overridden = False
+
         if video_id not in updated_video_ids:
             song_file_info = song_file_dict[video_id]
             song_name = song_file_info["name"]
@@ -673,6 +843,21 @@ def get_index_option_response(prompt, count: int):
 
     return index
 
+def get_numeric_option_response(prompt):
+    index = 0
+    while True:
+        selected_index = input(f"{prompt}: ")
+        try:
+            index = int(selected_index)
+            if index > 0:
+                break
+        except:
+            pass
+        
+        print("Invalid response, please enter a valid number greater than 0.")
+
+    return index
+
 if __name__ == "__main__":
     print("\n".join([
         "YouTube Music Playlist Downloader v" + version,
@@ -683,7 +868,7 @@ if __name__ == "__main__":
         "- Existing albums are updated with any new or missing songs",
         "- Songs no longer in the playlist are moved to end of album",
         "- Song metadata is automatically generated using video info",
-        "- Metadata includes Title, Artists, Album, and Track Number",
+        "- Metadata includes Title/Artists/Album/Lyrics/Track Number",
         "- Cover art for songs are created by using video thumbnails",
         "",
         "[NOTE] This program and ffmpeg may be blocked by antivirus.",
@@ -697,6 +882,7 @@ if __name__ == "__main__":
 
     OPTION_DOWNLOAD = "Download a playlist from YouTube"
     OPTION_UPDATE   = "Update previously saved playlist"
+    OPTION_SONG     = "Update a single song in playlist"
     OPTION_MODIFY   = "Modify previously saved playlist"
     OPTION_GENERATE = "Generate default playlist config"
     OPTION_CHANGE   = "Change current working directory"
@@ -767,7 +953,8 @@ if __name__ == "__main__":
                     break
                 if len(playlists_data) > 0:
                     options.insert(1, OPTION_UPDATE)
-                    options.insert(2, OPTION_MODIFY)
+                    options.insert(2, OPTION_SONG)
+                    options.insert(3, OPTION_MODIFY)
 
                 options_formatted = []
                 for i, option in enumerate(options):
@@ -812,11 +999,11 @@ if __name__ == "__main__":
                     config["use_uploader"] = get_bool_option_response("Use uploader instead of artist?", default=True)
                     config["use_playlist_name"] = get_bool_option_response("Use playlist name for album?", default=True)
 
-                    generate_playlist(config, config_file_name, False, False, regenerate_metadata, False, current_playlist_name)
+                    generate_playlist(config, config_file_name, False, False, regenerate_metadata, False, current_playlist_name, None)
                     quit_enabled = True
                     input("Finished downloading. Press 'Enter' to return to main menu or close this window to finish.")
 
-            if selected_option == OPTION_UPDATE or update_existing:
+            if selected_option == OPTION_UPDATE or selected_option == OPTION_SONG or update_existing:
                 # Update existing playlist
                 config = None
                 if update_existing:
@@ -842,8 +1029,12 @@ if __name__ == "__main__":
                     f"URL: {config['url']}",
                 ]) + "\n")
 
+                track_num_to_update = None
+                if selected_option == OPTION_SONG:
+                    track_num_to_update = get_numeric_option_response("Enter a song track number to update")
+
                 quit_enabled = False
-                generate_playlist(config, config_file_name, True, False, False, single_playlist, current_playlist_name)
+                generate_playlist(config, config_file_name, True, False, False, single_playlist, current_playlist_name, track_num_to_update)
                 quit_enabled = True
                 input("Finished updating. Press 'Enter' to return to main menu or close this window to finish.")
 
@@ -885,6 +1076,8 @@ if __name__ == "__main__":
                 modify_settings = get_bool_option_response("Change playlist settings?", default=False)
                 quit_enabled = False
 
+                update_single_song = False
+                track_num_to_update = None
                 if modify_settings:
                     last_use_title = config["use_title"]
                     last_use_uploader = config["use_uploader"]
@@ -898,10 +1091,16 @@ if __name__ == "__main__":
                     # Metadata needs to be regenerated if the settings have been changed
                     if config["use_title"] != last_use_title or config["use_uploader"] != last_use_uploader or config["use_playlist_name"] != last_use_playlist_name:
                         regenerate_metadata = True
+                elif single_playlist:
+                    update_single_song = get_bool_option_response("Update a single song?", default=False)
+                    if update_single_song:
+                        track_num_to_update = get_numeric_option_response("Enter a song track number to update")
 
-                force_update = get_bool_option_response("Force update all names and metadata?", default=False)
+                force_update = False
+                if not update_single_song:
+                    force_update = get_bool_option_response("Force update all names and metadata?", default=False)
 
-                generate_playlist(config, config_file_name, True, force_update, regenerate_metadata, single_playlist, current_playlist_name)
+                generate_playlist(config, config_file_name, True, force_update, regenerate_metadata, single_playlist, current_playlist_name, track_num_to_update)
                 quit_enabled = True
                 input("Finished updating. Press 'Enter' to return to main menu or close this window to finish.")
 
