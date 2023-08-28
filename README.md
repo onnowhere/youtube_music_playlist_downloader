@@ -68,7 +68,10 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 - `audio_codec`: The audio codec used by yt-dlp when downloading songs (default: `"mp3"`)
 - `audio_quality`: The audio quality used by yt-dlp when converting audio formats (default: `"5"`)
 - `image_format`: The cover art image format - for better quality but larger file size, use `"png"` (default: `"jpeg"`)
-- `lyrics_lang`: The language code to generate lyrics for - leave empty for automatic selection (default: `""`)
+- `lyrics_langs`: A list of language codes in order of priority to determine which lyrics to select if any are unavailable - leave empty for automatic selection (default: `[]`)
+    - Language codes support regex and are matched to the full string, for example: `"en.*"` is interpreted as `"^en.*$"` before regex matching
+    - Example: `["en.*", "ja"]` means select the first language with prefix `en`, else select the language that exactly matches `ja` if it exists
+- `strict_lang_match`: Whether to avoid selecting lyrics automatically given no language matches (default: `false`)
 - `cookie_file`: The path to the cookie file for yt-dlp to refer to (default: `""`)
 - `cookies_from_browser`: The name of the browser for yt-dlp to load cookies from (default: `""`)
 - `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)

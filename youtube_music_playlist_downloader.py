@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.3.0"
+version = "1.3.1"
 
 import os
 import re
@@ -139,6 +139,9 @@ def get_song_info(track_num, link, config: dict):
     ytdl = get_song_info_ytdl(track_num, config)
     return ytdl.extract_info(link, download=False)
 
+def get_subtitles_url(subtitles, lang):
+    return next(sub for sub in subtitles[lang] if sub["ext"] == "json3")["url"]
+
 def generate_metadata(file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool, force_update: bool):
     try:
         tags = ID3(file_path)
@@ -240,24 +243,41 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 synced_lyrics = []
                 unsynced_lyrics = []
                 lang = "en"
-                lyrics_lang = config["lyrics_lang"]
+                lyrics_langs = config["lyrics_langs"]
+                strict_lang_match = config["strict_lang_match"]
 
-                if subtitles is not None and len(subtitles) > 0:
+                # Filter out subtitles related to live chat
+                if requested_subtitles is not None:
+                    requested_subtitles = {key:value for (key, value) in requested_subtitles.items() if not key.startswith("live")}
+
+                if subtitles and requested_subtitles and len(subtitles) > 0:
                     subtitles_url = None
                     try:
-                        if lyrics_lang == "":
-                            requested_lang = next(iter(requested_subtitles))
-                            subtitles_url = next(sub for sub in subtitles[requested_lang] if sub["ext"] == "json3")["url"]
-                            lang = requested_lang
+                        if len(lyrics_langs) == 0:
+                            lang = next(iter(requested_subtitles))
+                            subtitles_url = get_subtitles_url(subtitles, lang)
+                            print(f"Selecting first available language for lyrics: {lang}")
                         else:
-                            for requested_lang in requested_subtitles.keys():
-                                if requested_lang == lyrics_lang:
-                                    subtitles_url = next(sub for sub in subtitles[requested_lang] if sub["ext"] == "json3")["url"]
-                                    lang = requested_lang
+                            lyrics_found = False
+                            for lyrics_lang in lyrics_langs:
+                                for requested_lang in requested_subtitles.keys():
+                                    # Regex match full string
+                                    if re.match(r"^" + lyrics_lang + r"$", requested_lang):
+                                        subtitles_url = get_subtitles_url(subtitles, requested_lang)
+                                        lang = requested_lang
+                                        print(f"Selected language for lyrics: {lang}")
+                                        lyrics_found = True
+                                        break
+                                if lyrics_found:
                                     break
+
                             if subtitles_url is None:
-                                subtitles_url = None
-                                print(f"Skipped updating lyrics: No lyrics found for language '{lyrics_lang}'. Available languages: {available_languages_str}")
+                                available_languages_str = str(list(requested_subtitles.keys()))
+                                print(f"Lyrics unavailable for selected languages. Available languages: {available_languages_str}")
+                                if not strict_lang_match:
+                                    lang = next(iter(requested_subtitles))
+                                    subtitles_url = get_subtitles_url(subtitles, lang)
+                                    print(f"Selecting first available language for lyrics: {lang}")
                     except:
                         subtitles_url = None
 
@@ -297,10 +317,13 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                                 last_timestamp = timestamp
                         except Exception as e:
                             print(f"Unable to get lyrics: {e}")
-                elif lyrics_lang != "":
-                    print(f"Skipped updating lyrics: No lyrics found for language '{lyrics_lang}'. Available languages: NONE")
 
-                lang = Language.get(lang).to_alpha3()
+                try:
+                    lang = Language.get(lang).to_alpha3()
+                except:
+                    print(f"Saving unrecognized lyrics language '{lang}' as 'en'")
+                    lang = Language.get("en").to_alpha3()
+
                 if len(synced_lyrics) == 0:
                     synced_lyrics = [("Lyrics unavailable", 0)]
                 if len(unsynced_lyrics) == 0:
@@ -473,7 +496,7 @@ def copy_config(src_config: dict, dst_config: dict):
                     value[sub_key] = sub_dict[sub_key]
 
             dst_config[key] = value
-        elif key in src_config:
+        elif key in src_config and type(dst_config[key]) == type(src_config[key]):
             dst_config[key] = src_config[key]
 
 def setup_config(config: dict):
@@ -490,7 +513,8 @@ def setup_config(config: dict):
         "audio_codec": "mp3",
         "audio_quality": "5",
         "image_format": "jpeg",
-        "lyrics_lang": "",
+        "lyrics_langs": [],
+        "strict_lang_match": False,
         "cookie_file": "",
         "cookies_from_browser": "",
         "verbose": False,
@@ -596,13 +620,13 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
         track_num = i + 1 - skipped_videos
         video_id = video_info["id"]
         link = f"https://www.youtube.com/watch?v={video_id}"
+        song_file_info = song_file_dict.get(video_id)
 
-        # Track number for updating a single song is not matched
-        if track_num_to_update is not None and track_num != track_num_to_update:
+        # Song must be downloaded already and match the current track number when updating a single song
+        if track_num_to_update is not None and (song_file_info is None or song_file_info["track_num"] != track_num_to_update):
             continue
 
         updated_video_ids.append(video_id)
-        song_file_info = song_file_dict.get(video_id)
 
         # Temporarily replace config with individual song config override
         if video_id in base_config["overrides"]:
@@ -707,7 +731,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
 
     # Song not found for single song update
     if track_num_to_update is not None:
-        print(f"Unable to update metadata for song #'{track_num_to_update}': This song could not be found or is unavailable, please update the playlist first")
+        print(f"Unable to update metadata for song #{track_num_to_update}: This song could not be found or is unavailable, please update the playlist first")
         return
 
     # Move songs that are missing (deleted/privated/etc.) to end of the list
