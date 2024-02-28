@@ -507,6 +507,7 @@ def setup_config(config: dict):
         "use_title": True,
         "use_uploader": True,
         "use_playlist_name": True,
+        "retain_order": False,
         "name_format": "%(title)s-%(id)s.%(ext)s",
         "track_num_in_name": True,
         "audio_format": "bestaudio/best",
@@ -614,9 +615,45 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
     skipped_videos = 0
     updated_video_ids = []
 
+    # Insert dummy entries for songs that should retain index order
+    config_overridden = False
+    for video_id in song_file_dict.keys():
+        # Temporarily replace config with individual song config override
+        if video_id in base_config["overrides"]:
+            config = copy.deepcopy(base_config)
+            copy_config(base_config["overrides"][video_id], config)
+            config_overridden = True
+        elif config_overridden:
+            config = copy.deepcopy(base_config)
+            config_overridden = False
+
+        if config["retain_order"]:
+            found = False
+            for i, video_info in enumerate(playlist_entries):
+                if video_info is not None and video_info["id"] == video_id:
+                    found = True
+                    break
+            if not found:
+                # Insert dummy entry
+                song_file_info = song_file_dict[video_id]
+                song_track_num = song_file_info["track_num"]
+                index = song_track_num - 1
+                if index > len(playlist_entries):
+                    for i in range(index - len(playlist_entries)):
+                        playlist_entries.append(None)
+                playlist_entries.insert(index, {"id": video_id, "channel_id": None, "title": None})
+
+    # Restore config
+    if config_overridden:
+        config = copy.deepcopy(base_config)
+
     # Download each item in the list
     config_overridden = False
     for i, video_info in enumerate(playlist_entries):
+        if video_info is None:
+            # Dummy spacer entry to retain index order
+            continue
+
         track_num = i + 1 - skipped_videos
         video_id = video_info["id"]
         link = f"https://www.youtube.com/watch?v={video_id}"
@@ -707,7 +744,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
             # Check if video is unavailable
             if video_info["channel_id"] is None or video_unavailable:
                 error_text = f"The previous song '{song_name}' is unavailable but a local copy exists"
-                if not video_unavailable:
+                if not video_unavailable and video_info['title'] is not None and video_info['title'] != "":
                     # Video title indicates availability of video such as '[Private Video]'
                     error_text += f" - {video_info['title']}"
                 print(error_text)
