@@ -507,7 +507,7 @@ def setup_config(config: dict):
         "use_title": True,
         "use_uploader": True,
         "use_playlist_name": True,
-        "retain_order": False,
+        "retain_missing_order": False,
         "name_format": "%(title)s-%(id)s.%(ext)s",
         "track_num_in_name": True,
         "audio_format": "bestaudio/best",
@@ -627,7 +627,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
             config = copy.deepcopy(base_config)
             config_overridden = False
 
-        if config["retain_order"]:
+        if config["retain_missing_order"]:
             found = False
             for i, video_info in enumerate(playlist_entries):
                 if video_info is not None and video_info["id"] == video_id:
