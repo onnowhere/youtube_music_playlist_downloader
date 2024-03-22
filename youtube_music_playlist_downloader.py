@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.3.1"
+version = "1.3.3"
 
 import os
 import re
@@ -927,7 +927,7 @@ if __name__ == "__main__":
         "of any YouTube playlist in the form of a music album folder",
         "- Songs are stored in album folders named by playlist title",
         "- Existing albums are updated with any new or missing songs",
-        "- Songs no longer in the playlist are moved to end of album",
+        "- Missing songs are sent to end of album [toggle in config]",
         "- Song metadata is automatically generated using video info",
         "- Metadata includes Title/Artists/Album/Lyrics/Track Number",
         "- Cover art for songs are created by using video thumbnails",
