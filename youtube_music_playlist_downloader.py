@@ -4,6 +4,7 @@ version = "1.3.3"
 
 import os
 import re
+import sys
 import copy
 import json
 import time
@@ -1212,3 +1213,6 @@ if __name__ == "__main__":
             print(e)
             print("Error encountered while generating. Please try again.")
             continue
+
+    # Suppress additional messages
+    sys.exit()
