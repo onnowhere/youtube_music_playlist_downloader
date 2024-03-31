@@ -62,6 +62,8 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 
 ### Additional options adjustable through the config file
 - `sync_folder_name`: Whether to automatically sync the name of the playlist folder to the YouTube playlist name (default: `true`)
+- `use_threading`: Whether to use threading for faster song downloading and updating at the cost of more CPU and memory usage (default: `true`)
+- `thread_count`: Number of threads to use for threading - if set to 0, this value will be dynamically determined (default: `0`)
 - `retain_missing_order`: Whether to retain the current order of missing or deleted songs if a local copy exists or move them to the end of the album (default: `false`)
 - `name_format`: The name format used to generate file names in yt-dlp output template format (default: `"%(title)s-%(id)s.%(ext)s"`)
 - `track_num_in_name`: Whether to include the track number at the start of all file names (default: `true`)
@@ -86,7 +88,7 @@ A `.playlist_config.json` file is generated for all album folders and contains t
     - `lyrics`: Include lyrics metadata (default: `true`)
 - `overrides`: A mapping of custom individual song config overrides - additional entries can be added for each song
     - `[video_id]`: A mapping of overridden config values for this specific song - a unique alphanumeric YouTube video id
-        - `...`: All config values from above are valid here with exception to `url`, `reverse_playlist`, `sync_folder_name`, and `overrides`
+        - `...`: All config values from above are valid here with exception to `url`, `reverse_playlist`, `sync_folder_name`, `use_threading`, `thread_count`, and `overrides`
 
 ## License
 Licensed under MIT (See [LICENSE](LICENSE))

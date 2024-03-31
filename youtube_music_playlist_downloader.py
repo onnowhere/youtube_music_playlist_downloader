@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.3.3"
+version = "1.4.0"
 
 import os
 import re
@@ -10,6 +10,7 @@ import json
 import time
 import requests
 import subprocess
+import concurrent.futures
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
@@ -37,6 +38,14 @@ class FilePathCollector(postprocessor.common.PostProcessor):
     def run(self, information):
         self.file_paths.append(information['filepath'])
         return [], information
+
+class SongFileInfo:
+    def __init__(self, video_id, name, file_name, file_path, track_num):
+        self.video_id = video_id
+        self.name = name
+        self.file_name = file_name
+        self.file_path = file_path
+        self.track_num = track_num
 
 def write_config(file, config: dict):
     with open(file, "w") as f:
@@ -80,8 +89,32 @@ def convert_image_type(image, image_type):
 def update_track_num(file_path, track_num):
     tags = ID3(file_path)
     tags.add(TRCK(encoding=3, text=str(track_num)))
-
     tags.save(v2_version=3)
+
+def update_file_order(playlist_name, song_file_info, track_num, config: dict, missing_video: bool):
+    # Fix name if mismatching
+    if config["track_num_in_name"]:
+        song_file_name = re.sub(r"^[0-9]+. ", "", song_file_info.file_name)
+        file_name = f"{track_num}. {song_file_name}"
+    else:
+        file_name = song_file_info.file_name
+    file_path = os.path.join(playlist_name, file_name)
+            
+    # Update song index if not matched
+    if song_file_info.track_num != track_num and config["include_metadata"]["track"]:
+        if missing_video:
+            print(f"Reordering '{song_file_info.name}' from position {song_file_info.track_num} to {track_num} due to missing video link...")
+        else:
+            print(f"Reordering '{song_file_info.name}' from position {song_file_info.track_num} to {track_num}...")
+        update_track_num(song_file_info.file_path, track_num)
+
+    if song_file_info.file_path != file_path:
+        if song_file_info.track_num == track_num:
+            # Track num in name was incorrectly modified manually by user
+            print(f"Renaming incorrect file name from '{song_file_info.file_name}' to '{file_name}'")
+        os.rename(song_file_info.file_path, file_path)
+
+    return file_path
 
 def get_metadata_map():
     return {
@@ -101,7 +134,7 @@ def flatten(l):
 def get_metadata_dict(tags):
     return {tag:tags.getall(tag) for tag in flatten(get_metadata_map().values())}
 
-def valid_metadata(config, metadata_dict):
+def valid_metadata(config: dict, metadata_dict: dict):
     include_metadata = config["include_metadata"].copy()
 
     # WOAR URL is required to identify video
@@ -156,7 +189,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 info_dict_with_audio_ext["ext"] = config["audio_codec"]
                 force_update_file_name = get_song_info_ytdl(track_num, config).prepare_filename(info_dict_with_audio_ext)
             except Exception as e:
-                raise Exception(f"Unable to gather information for updated file name: {e}")
+                raise Exception(f"Failed to get information for updated file name - {e}")
         return force_update_file_name
 
     # Generate only if metadata is missing or if explicitly flagged
@@ -189,7 +222,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             subtitles = info_dict.get("subtitles")
             requested_subtitles = info_dict.get("requested_subtitles")
         except Exception as e:
-            raise Exception(f"Unable to gather information for song metadata: {e}")
+            raise Exception(f"Failed to get information - {e}")
 
         try:
             # Generate tags
@@ -392,6 +425,54 @@ def download_song(link, playlist_name, track_num, config: dict):
 
     return result, file_path
 
+def download_song_and_update(video_info, playlist, link, playlist_name, track_num, config: dict):
+    file_path = None
+    try:
+        result, file_path = download_song(link, playlist_name, track_num, config)
+
+        # Check download failed and video is unavailable
+        if result != 0 and video_info["channel_id"] is None:
+            # Video title indicates availability of video such as '[Private Video]'
+            raise Exception(f"Video is unavailable - {video_info['title']}")
+
+        generate_metadata(file_path, link, track_num, playlist["title"], config, False, False)
+    except:
+        error_message = f"Unable to download video #{track_num} '{link}': {e}"
+        return error_message, track_num
+    return None, track_num
+
+def update_song(video_info, song_file_info, file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool, force_update: bool):
+    # Generate metadata just in case it is missing
+    video_unavailable = False
+    error_message = []
+    try:
+        force_update_file_name = generate_metadata(file_path, link, track_num, playlist_name, config, regenerate_metadata, force_update)
+        if force_update:
+            force_update_file_path = os.path.join(playlist_name, force_update_file_name)
+            if file_path != force_update_file_path:
+                # Track name needs updating to proper format
+                print(f"Renaming incorrect file name from '{Path(file_path).stem}' to '{Path(force_update_file_path).stem}'")
+                os.rename(file_path, force_update_file_path)
+    except Exception as e:
+        error_message.append(f"Unable to update metadata for #{track_num} '{link}': {e}")
+        if "This video is not available" in str(e):
+            video_unavailable = True
+
+    # Check if video is unavailable
+    if video_info["channel_id"] is None or video_unavailable:
+        if len(error_message) == 0:
+            # Metadata was obtained successfully but some information is missing
+            error_message.append(f"Unable to fully update metadata for #{track_num} '{link}'")
+        error_text = f"The previous song '{song_file_info.name}' is unavailable but a local copy exists"
+        if not video_unavailable and video_info['title'] is not None and video_info['title'] != "":
+            # Video title indicates availability of video such as '[Private Video]'
+            error_text += f" - {video_info['title']}"
+        error_message.append(error_text)
+
+    if len(error_message) > 0:
+        return "\n".join(error_message)
+    return None
+
 def format_file_name(file_name):
     return re.sub(r"[\\/:*?\"<>|]", "_", file_name)
 
@@ -405,59 +486,42 @@ def get_video_id_from_metadata(tags):
 
     return get_url_parameter(str(links[0]), "v")
 
-def get_song_file_path(playlist_name, video_id):
-    for file_name in os.listdir(playlist_name):
-        file_path = os.path.join(playlist_name, file_name)
+def get_song_file_info(playlist_name, song_file_name):
+    song_file_path = os.path.join(playlist_name, song_file_name)
 
-        try:
-            tags = ID3(song_file_path)
-        except:
-            # File is not considered a song file if it contains no metadata
-            continue
+    try:
+        tags = ID3(song_file_path)
+    except:
+        # File is not considered a song file if it contains no metadata
+        return None
 
-        try:
-            if get_video_id_from_metadata(tags) == video_id:
-                return file_path
-        except:
-            continue
+    try:
+        song_video_id = get_video_id_from_metadata(tags)
+        song_name = tags.get("TIT2", song_file_name)
+        song_track_num = int(str(tags.get("TRCK", 0)))
+    except Exception as e:
+        print(f"Song file '{song_file_name}' is in an invalid format and will be ignored")
+        return None
 
-    return None
+    return SongFileInfo(song_video_id, song_name, song_file_name, song_file_path, song_track_num)
 
-def get_song_file_dict(playlist_name):
-    song_file_dict = {}
+def get_song_file_infos(playlist_name):
+    song_file_infos = {}
     duplicate_files = {}
     for file_name in os.listdir(playlist_name):
-        song_file_name = file_name
-        song_file_path = os.path.join(playlist_name, file_name)
-
-        try:
-            tags = ID3(song_file_path)
-        except:
-            # File is not considered a song file if it contains no metadata
+        song_file_info = get_song_file_info(playlist_name, file_name)
+        if song_file_info is None:
             continue
 
-        try:
-            song_video_id = get_video_id_from_metadata(tags)
-            song_name = tags.get("TIT2", song_file_name)
-            song_track_num = int(str(tags.get("TRCK", 0)))
-        except Exception as e:
-            print(f"Song file '{file_name}' is in an invalid format and will be ignored")
-            continue
-
-        if song_video_id in song_file_dict:
+        if song_file_info.video_id in song_file_infos:
             # Check for duplicate song files
-            if song_video_id not in duplicate_files:
-                duplicate_files[song_video_id] = [song_file_dict[song_video_id]['file_name']]
+            if song_file_info.video_id not in duplicate_files:
+                duplicate_files[song_file_info.video_id] = [song_file_infos[song_file_info.video_id].file_name]
 
-            duplicate_files[song_video_id].append(song_file_name)
+            duplicate_files[song_file_info.video_id].append(song_file_info.file_name)
             continue
 
-        song_file_dict[song_video_id] = {
-            "name": song_name,
-            "file_name": song_file_name,
-            "file_path": song_file_path,
-            "track_num": song_track_num
-        }
+        song_file_infos[song_file_info.video_id] = song_file_info
 
     if duplicate_files:
         exception_strings = []
@@ -479,7 +543,7 @@ def get_song_file_dict(playlist_name):
             ""
         ]))
 
-    return song_file_dict
+    return song_file_infos
 
 def setup_include_metadata_config():
     return {key:True for key in get_metadata_map().keys() if key != "url"}
@@ -500,14 +564,28 @@ def copy_config(src_config: dict, dst_config: dict):
         elif key in src_config and type(dst_config[key]) == type(src_config[key]):
             dst_config[key] = src_config[key]
 
+def get_override_config(video_id, base_config: dict):
+    config = copy.deepcopy(base_config)
+    if video_id in base_config["overrides"]:
+        copy_config(base_config["overrides"][video_id], config)
+
+    return config
+
 def setup_config(config: dict):
     new_config = {
+        # Console config options
         "url": "",
-        "sync_folder_name": True,
         "reverse_playlist": False,
+
         "use_title": True,
         "use_uploader": True,
         "use_playlist_name": True,
+
+        # File config options
+        "sync_folder_name": True,
+        "use_threading": True,
+        "thread_count": 0,
+
         "retain_missing_order": False,
         "name_format": "%(title)s-%(id)s.%(ext)s",
         "track_num_in_name": True,
@@ -528,7 +606,7 @@ def setup_config(config: dict):
 
     # Create example song config override
     config_copy = copy.deepcopy(new_config)
-    excluded_override_keys = ["url", "sync_folder_name", "reverse_playlist", "overrides"]
+    excluded_override_keys = ["url", "reverse_playlist", "sync_folder_name", "use_threading", "thread_count", "overrides"]
     for excluded_override_key in excluded_override_keys:
         if excluded_override_key in config_copy:
             config_copy.pop(excluded_override_key)
@@ -559,9 +637,9 @@ def generate_default_config(config: dict, config_file_name: str):
 
     write_config(os.path.join(playlist_name, config_file_name), config)
 
-def generate_playlist(config: dict, config_file_name: str, update: bool, force_update: bool, regenerate_metadata: bool, single_playlist: bool, current_playlist_name=None, track_num_to_update=None):
+def generate_playlist(base_config: dict, config_file_name: str, update: bool, force_update: bool, regenerate_metadata: bool, single_playlist: bool, current_playlist_name=None, track_num_to_update=None):
     # Get list of links in the playlist
-    playlist = get_playlist_info(config)
+    playlist = get_playlist_info(base_config)
     
     if "entries" not in playlist:
         raise Exception("No videos found in playlist")
@@ -585,7 +663,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
         if update:
             # Check if playlist name changed
             if current_playlist_name is not None and current_playlist_name != adjusted_playlist_name:
-                if not config["sync_folder_name"]:
+                if not base_config["sync_folder_name"]:
                     adjusted_playlist_name = current_playlist_name
                     break
                 try:
@@ -595,7 +673,7 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                     continue
 
                 print(f"Renaming playlist from '{current_playlist_name}' to '{adjusted_playlist_name}'...")
-                if config["use_playlist_name"]:
+                if base_config["use_playlist_name"]:
                     # Regenerate metadata to update album tag with playlist name
                     regenerate_metadata = True
         else:
@@ -608,26 +686,17 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
         break
     playlist_name = adjusted_playlist_name
 
-    base_config = copy.deepcopy(config)
-    write_config(os.path.join(playlist_name, config_file_name), config)
-    song_file_dict = get_song_file_dict(playlist_name)
+    # Update config for playlist
+    write_config(os.path.join(playlist_name, config_file_name), base_config)
+    song_file_infos = get_song_file_infos(playlist_name) # May raise exception for duplicate songs
         
     track_num = 1
     skipped_videos = 0
     updated_video_ids = []
 
     # Insert dummy entries for songs that should retain index order
-    config_overridden = False
-    for video_id in song_file_dict.keys():
-        # Temporarily replace config with individual song config override
-        if video_id in base_config["overrides"]:
-            config = copy.deepcopy(base_config)
-            copy_config(base_config["overrides"][video_id], config)
-            config_overridden = True
-        elif config_overridden:
-            config = copy.deepcopy(base_config)
-            config_overridden = False
-
+    for video_id in song_file_infos.keys():
+        config = get_override_config(video_id, base_config)
         if config["retain_missing_order"]:
             found = False
             for i, video_info in enumerate(playlist_entries):
@@ -636,20 +705,25 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
                     break
             if not found:
                 # Insert dummy entry
-                song_file_info = song_file_dict[video_id]
-                song_track_num = song_file_info["track_num"]
-                index = song_track_num - 1
+                index = song_file_infos[video_id].track_num - 1
                 if index > len(playlist_entries):
                     for i in range(index - len(playlist_entries)):
                         playlist_entries.append(None)
                 playlist_entries.insert(index, {"id": video_id, "channel_id": None, "title": None})
 
-    # Restore config
-    if config_overridden:
-        config = copy.deepcopy(base_config)
+    # Prepare threading executor
+    download_executor = None
+    update_executor = None
+    download_futures = []
+    update_futures = []
+    if base_config["use_threading"]:
+        thread_count = base_config["thread_count"]
+        if thread_count <= 0:
+            thread_count = None
+        download_executor = concurrent.futures.ThreadPoolExecutor(max_workers=thread_count)
+        update_executor = concurrent.futures.ThreadPoolExecutor(max_workers=thread_count)
 
     # Download each item in the list
-    config_overridden = False
     for i, video_info in enumerate(playlist_entries):
         if video_info is None:
             # Dummy spacer entry to retain index order
@@ -658,34 +732,22 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
         track_num = i + 1 - skipped_videos
         video_id = video_info["id"]
         link = f"https://www.youtube.com/watch?v={video_id}"
-        song_file_info = song_file_dict.get(video_id)
+        song_file_info = song_file_infos.get(video_id)
 
-        # Song must be downloaded already and match the current track number when updating a single song
-        if track_num_to_update is not None and (song_file_info is None or song_file_info["track_num"] != track_num_to_update):
+        # Song must be downloaded already and match the current track num when updating a single song
+        if track_num_to_update is not None and (song_file_info is None or song_file_info.track_num != track_num_to_update):
             continue
 
+        config = get_override_config(video_id, base_config)
         updated_video_ids.append(video_id)
-
-        # Temporarily replace config with individual song config override
-        if video_id in base_config["overrides"]:
-            config = copy.deepcopy(base_config)
-            copy_config(base_config["overrides"][video_id], config)
-            config_overridden = True
-        elif config_overridden:
-            config = copy.deepcopy(base_config)
-            config_overridden = False
 
         # Update metadata for a single song
         if track_num_to_update is not None:
             if song_file_info is not None:
-                song_name = song_file_info["name"]
-                song_file_name = song_file_info["file_name"]
-                song_track_num = song_file_info["track_num"]
-
-                file_path = os.path.join(playlist_name, song_file_name)
+                file_path = os.path.join(playlist_name, song_file_info.file_name)
                 try:
-                    # Update all metadata but do not update the track number to avoid resorting playlist
-                    force_update_file_name = generate_metadata(file_path, link, song_track_num, playlist["title"], config, regenerate_metadata, True)
+                    # Update all metadata but do not update the track num to avoid resorting playlist
+                    force_update_file_name = generate_metadata(file_path, link, song_file_info.track_num, playlist["title"], config, regenerate_metadata, True)
                     force_update_file_path = os.path.join(playlist_name, force_update_file_name)
                     if file_path != force_update_file_path:
                         # Track name needs updating to proper format
@@ -699,73 +761,76 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
             # Updating single song finished
             return
 
-        if song_file_info is not None:
+        if song_file_info is None:
+            # Download audio if not downloaded
+            
+            if base_config["use_threading"]:
+                download_futures.append(download_executor.submit(download_song_and_update, video_info, playlist, link, playlist_name, track_num, config))
+            else:
+                error_message, _ = download_song_and_update(video_info, playlist, link, playlist_name, track_num, config)
+                if error_message is not None:
+                    print(error_message)
+                    skipped_videos += 1
+        else:
             # Skip downloading audio if already downloaded
             print(f"Skipped downloading '{link}' ({track_num}/{len(playlist_entries) - skipped_videos})")
 
-            song_name = song_file_info["name"]
-            song_file_name = song_file_info["file_name"]
-            song_file_path = song_file_info["file_path"]
-            song_track_num = song_file_info["track_num"]
-
-            # Fix name if mismatching
-            if config["track_num_in_name"]:
-                song_file_name = re.sub(r"^[0-9]+. ", "", song_file_name)
-                file_name = f"{track_num}. {song_file_name}"
+            if base_config["use_threading"]:
+                # Defer updating track num when using threading
+                file_path = os.path.join(playlist_name, song_file_info.file_name)
             else:
-                file_name = song_file_name
-            file_path = os.path.join(playlist_name, file_name)
-            
-            # Update song index if not matched
-            if song_track_num != track_num and config["include_metadata"]["track"]:
-                print(f"Reordering '{song_name}' from position {song_track_num} to {track_num}...")
-                update_track_num(song_file_path, track_num)
-
-            if song_file_path != file_path:
-                if song_track_num == track_num:
-                    # Track number in name was incorrectly modified manually by user
-                    print(f"Renaming incorrect file name from '{Path(song_file_path).stem}' to '{Path(file_path).stem}'")
-                os.rename(song_file_path, file_path)
+                # Update track num and get file path
+                file_path = update_file_order(playlist_name, song_file_info, track_num, config, False)
 
             # Generate metadata just in case it is missing
-            video_unavailable = False
-            try:
-                force_update_file_name = generate_metadata(file_path, link, track_num, playlist["title"], config, regenerate_metadata, force_update)
-                if force_update:
-                    force_update_file_path = os.path.join(playlist_name, force_update_file_name)
-                    if file_path != force_update_file_path:
-                        # Track name needs updating to proper format
-                        print(f"Renaming incorrect file name from '{Path(file_path).stem}' to '{Path(force_update_file_path).stem}'")
-                        os.rename(file_path, force_update_file_path)
-            except Exception as e:
-                print(f"Unable to update metadata: {e}")
-                if "This video is not available" in str(e):
-                    video_unavailable = True
+            if base_config["use_threading"]:
+                update_futures.append(update_executor.submit(update_song, video_info, song_file_info, file_path, link, track_num, playlist["title"], config, regenerate_metadata, force_update))
+            else:
+                error_message = update_song(video_info, song_file_info, file_path, link, track_num, playlist["title"], config, regenerate_metadata, force_update)
+                if error_message is not None:
+                    print(error_message)
 
-            # Check if video is unavailable
-            if video_info["channel_id"] is None or video_unavailable:
-                error_text = f"The previous song '{song_name}' is unavailable but a local copy exists"
-                if not video_unavailable and video_info['title'] is not None and video_info['title'] != "":
-                    # Video title indicates availability of video such as '[Private Video]'
-                    error_text += f" - {video_info['title']}"
-                print(error_text)
-        else:
-            try:
-                # Download audio if not downloaded
-                print(f"Downloading '{link}'... ({track_num}/{len(playlist_entries) - skipped_videos})")
+    # Update track nums after download and update when using threading
+    if base_config["use_threading"]:
+        results = []
 
-                # Attempt to download video
-                result, file_path = download_song(link, playlist_name, track_num, config)
-                
-                # Check download failed and video is unavailable
-                if result != 0 and video_info["channel_id"] is None:
-                    # Video title indicates availability of video such as '[Private Video]'
-                    raise Exception(f"Video is unavailable - {video_info['title']}")
+        # Gather all results in order of submission
+        for index, task in enumerate(download_futures):
+            error_message, track_num = task.result()
+            results.append((error_message, track_num))
+            if error_message is not None:
+                print(error_message)
 
-                generate_metadata(file_path, link, track_num, playlist["title"], config, False, False)
-            except Exception as e:
-                print(f"Unable to download video: {e}")
+        for index, task in enumerate(update_futures):
+            error_message = task.result()
+            if error_message is not None:
+                print(error_message)
+
+        # Explicitly shutdown executors
+        download_executor.shutdown(wait=False)
+        update_executor.shutdown(wait=False)
+
+        # Get all new temporary song file infos for existing and newly downloaded songs and update
+        skipped_track_nums = [track_num for (error_message, track_num) in results if error_message is not None]
+        temp_song_file_infos = get_song_file_infos(playlist_name) # May raise exception for duplicate songs
+        for i, video_info in enumerate(playlist_entries):
+            if video_info is None:
+                # Dummy spacer entry to retain index order
+                continue
+
+            # Skip videos that failed to download
+            original_track_num = i + 1
+            track_num = original_track_num - skipped_videos
+            if original_track_num in skipped_track_nums:
                 skipped_videos += 1
+                continue
+
+            video_id = video_info["id"]
+            temp_song_file_info = temp_song_file_infos.get(video_id)
+            if temp_song_file_info is not None:
+                # Update file path and track num
+                config = get_override_config(video_id, base_config)
+                file_path = update_file_order(playlist_name, temp_song_file_info, track_num, config, False)
 
     # Song not found for single song update
     if track_num_to_update is not None:
@@ -774,40 +839,12 @@ def generate_playlist(config: dict, config_file_name: str, update: bool, force_u
 
     # Move songs that are missing (deleted/privated/etc.) to end of the list
     track_num = len(playlist_entries) - skipped_videos + 1
-    for video_id in song_file_dict.keys():
-        # Temporarily replace config with individual song config override
-        if video_id in base_config["overrides"]:
-            config = copy.deepcopy(base_config)
-            copy_config(base_config["overrides"][video_id], config)
-            config_overridden = True
-        elif config_overridden:
-            config = copy.deepcopy(base_config)
-            config_overridden = False
-
+    for video_id in song_file_infos.keys():
         if video_id not in updated_video_ids:
-            song_file_info = song_file_dict[video_id]
-            song_name = song_file_info["name"]
-            song_file_name = song_file_info["file_name"]
-            song_file_path = song_file_info["file_path"]
-            song_track_num = song_file_info["track_num"]
-
-            if config["track_num_in_name"]:
-                song_file_name = re.sub(r"^[0-9]+. ", "", song_file_name)
-                file_name = f"{track_num}. {song_file_name}"
-            else:
-                file_name = song_file_name
-            file_path = os.path.join(playlist_name, file_name)
-
-            if song_track_num != track_num and config["include_metadata"]["track"]:
-                print(f"Moving '{song_name}' from position {song_track_num} to {track_num} due to missing video link...")
-                update_track_num(song_file_path, track_num)
-
-            if song_file_path != file_path:
-                if song_track_num == track_num:
-                    # Track number in name was incorrectly modified manually by user
-                    print(f"Renaming incorrect file name from '{song_file_name}' to '{file_name}'")
-                os.rename(song_file_path, file_path)
-
+            # Update file path and track num
+            config = get_override_config(video_id, base_config)
+            song_file_info = song_file_infos[video_id]
+            file_path = update_file_order(playlist_name, song_file_info, track_num, config, True)
             track_num += 1
 
     print("Download finished.")
