@@ -94,4 +94,4 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 Licensed under MIT (See [LICENSE](LICENSE))
 
 ## Disclaimer
-This program was created for educational purposes only. Please respect the copyright of any videos you download. The creator of this program will not be held liable for any copyright violations caused by the usage of this program.
+Please respect the copyright of any videos you download. The creator of this program will not be held liable for any copyright violations caused by the usage of this program.

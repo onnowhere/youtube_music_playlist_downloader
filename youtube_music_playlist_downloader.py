@@ -421,6 +421,8 @@ def download_song(link, playlist_name, track_num, config: dict):
         file_path_collector = FilePathCollector()
         ytdl.add_post_processor(file_path_collector)
         result = ytdl.download([link])
+        if len(file_path_collector.file_paths) == 0:
+            raise Exception("No file download path found, video may be unavailable")
         file_path = file_path_collector.file_paths[0]
 
     return result, file_path
@@ -436,8 +438,8 @@ def download_song_and_update(video_info, playlist, link, playlist_name, track_nu
             raise Exception(f"Video is unavailable - {video_info['title']}")
 
         generate_metadata(file_path, link, track_num, playlist["title"], config, False, False)
-    except:
-        error_message = f"Unable to download video #{track_num} '{link}': {e}"
+    except Exception as e:
+        error_message = f"Unable to download video number {track_num} '{link}': {e}"
         return error_message, track_num
     return None, track_num
 
@@ -763,6 +765,7 @@ def generate_playlist(base_config: dict, config_file_name: str, update: bool, fo
 
         if song_file_info is None:
             # Download audio if not downloaded
+            print(f"Downloading '{link}'... ({track_num}/{len(playlist_entries) - skipped_videos})")
             
             if base_config["use_threading"]:
                 download_futures.append(download_executor.submit(download_song_and_update, video_info, playlist, link, playlist_name, track_num, config))
