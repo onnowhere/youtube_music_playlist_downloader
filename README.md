@@ -36,6 +36,9 @@ If using the source files, double click the file to run with Python or run from 
 python youtube_music_playlist_downloader.py
 ```
 
+## Notice
+If you are running into issues with downloads such as `Sign in to confirm you’re not a bot.`, please see https://github.com/yt-dlp/yt-dlp/wiki/Extractors. The following options for cookies and PO Tokens are provided in the config file to pass along to yt-dlp: `cookie_file`, `cookies_from_browser`, `extractor_args`.
+
 ## Build
 To build the standalone executable, you must have Python and `pyinstaller`. Once you do, follow the steps below.
 
@@ -77,6 +80,7 @@ A `.playlist_config.json` file is generated for all album folders and contains t
 - `strict_lang_match`: Whether to avoid selecting lyrics automatically given no language matches (default: `false`)
 - `cookie_file`: The path to the cookie file for yt-dlp to refer to (default: `""`)
 - `cookies_from_browser`: The name of the browser for yt-dlp to load cookies from (default: `""`)
+- `extractor_args`: The extractor arguments, such as PO Token, for yt-dlp to run with (default: `""`)
 - `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)
 - `include_metadata`: A mapping of metadata fields and whether to include them in song metadata
     - `title`: Include title metadata (default: `true`)
