@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.4.0"
+version = "1.4.1"
 
 import os
 import re
