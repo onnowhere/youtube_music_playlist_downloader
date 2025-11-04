@@ -2,4 +2,4 @@ langcodes==3.3.0
 mutagen==1.46.0
 Pillow==10.0.0
 requests==2.31.0
-yt-dlp~=2025.4.30
+yt-dlp~=2025.10.22
