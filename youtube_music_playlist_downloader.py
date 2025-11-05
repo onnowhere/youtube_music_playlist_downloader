@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # YouTube Music Playlist Downloader
-version = "1.4.1"
+version = "1.4.2"
 
 import os
 import re
@@ -13,11 +13,11 @@ import subprocess
 import concurrent.futures
 from PIL import Image
 from io import BytesIO
+from mutagen import id3
 from pathlib import Path
 from langcodes import Language
-from yt_dlp import YoutubeDL, postprocessor
+from yt_dlp import YoutubeDL, postprocessor, utils
 from urllib.parse import urlparse, parse_qs
-from mutagen.id3 import ID3, APIC, TIT2, TPE1, TRCK, TALB, TDRC, WOAR, SYLT, USLT, error
 
 # ID3 info:
 # APIC: thumbnail
@@ -74,7 +74,7 @@ def get_playlist_info(config: dict):
         "extract_flat": True,
         "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
         "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
-        "extractor_args": None if config["extractor_args"] == "" else config["extractor_args"],
+        "extractor_args": config["extractor_args"],
         "playlistreverse": config["reverse_playlist"]
     }
     with YoutubeDL(ytdl_opts) as ytdl:
@@ -88,8 +88,8 @@ def convert_image_type(image, image_type):
         return f.getvalue()
 
 def update_track_num(file_path, track_num):
-    tags = ID3(file_path)
-    tags.add(TRCK(encoding=3, text=str(track_num)))
+    tags = id3.ID3(file_path)
+    tags.add(id3.TRCK(encoding=3, text=str(track_num)))
     tags.save(v2_version=3)
 
 def update_file_order(playlist_name, song_file_info, track_num, config: dict, missing_video: bool):
@@ -118,7 +118,7 @@ def update_file_order(playlist_name, song_file_info, track_num, config: dict, mi
     return file_path
 
 def get_metadata_map():
-    return {
+    metadata_map = {
         "title": ["TIT2"],
         "cover": ["APIC:Front cover"],
         "track": ["TRCK"],
@@ -129,11 +129,14 @@ def get_metadata_map():
         "lyrics": ["SYLT", "USLT"]
     }
 
+    return metadata_map
+
 def flatten(l):
     return [item for sublist in l for item in sublist]
 
-def get_metadata_dict(tags):
-    return {tag:tags.getall(tag) for tag in flatten(get_metadata_map().values())}
+def get_metadata_dict(tags, config: dict):
+    tag_list = flatten(get_metadata_map().values()) + list(config["custom_metadata"].keys())
+    return {tag: tags.getall(tag) for tag in tag_list}
 
 def valid_metadata(config: dict, metadata_dict: dict):
     include_metadata = config["include_metadata"].copy()
@@ -142,6 +145,12 @@ def valid_metadata(config: dict, metadata_dict: dict):
     include_metadata["url"] = True
 
     selected_tags = flatten([value for key, value in get_metadata_map().items() if include_metadata[key]])
+
+    # Add custom metadata tags if a corresponding value is specified
+    for tag, value in config["custom_metadata"].items():
+        if value:
+            selected_tags.append(tag)
+
     return all([value for tag, value in metadata_dict.items() if tag in selected_tags])
 
 def get_song_info_ytdl(track_num, config: dict):
@@ -157,7 +166,7 @@ def get_song_info_ytdl(track_num, config: dict):
         "format": config["audio_format"],
         "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
         "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
-        "extractor_args": None if config["extractor_args"] == "" else config["extractor_args"],
+        "extractor_args": config["extractor_args"],
         "writesubtitles": True,
         "allsubtitles": True,
         "postprocessors": [{
@@ -167,7 +176,6 @@ def get_song_info_ytdl(track_num, config: dict):
         }]
     }
 
-    info_dict = {}
     return YoutubeDL(ytdl_opts)
 
 def get_song_info(track_num, link, config: dict):
@@ -180,7 +188,7 @@ def get_subtitles_url(subtitles, lang):
 
 def generate_metadata(file_path, link, track_num, playlist_name, config: dict, regenerate_metadata: bool, force_update: bool):
     try:
-        tags = ID3(file_path)
+        tags = id3.ID3(file_path)
     except:
         # Unsupported audio codec for metadata
         force_update_file_name = ""
@@ -195,7 +203,7 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
         return force_update_file_name
 
     # Generate only if metadata is missing or if explicitly flagged
-    metadata_dict = get_metadata_dict(tags)
+    metadata_dict = get_metadata_dict(tags, config)
 
     force_update_file_name = ""
     if force_update:
@@ -223,6 +231,15 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             album = info_dict.get("album")
             subtitles = info_dict.get("subtitles")
             requested_subtitles = info_dict.get("requested_subtitles")
+
+            metadata_overrides = config.get("metadata_overrides") or {}
+            override_title = metadata_overrides.get("title")
+            override_cover_file = metadata_overrides.get("cover")
+            override_track_num = metadata_overrides.get("track")
+            override_artist = metadata_overrides.get("artist")
+            override_album = metadata_overrides.get("album")
+            override_upload_date = metadata_overrides.get("date")
+            override_lyrics = metadata_overrides.get("lyrics")
         except Exception as e:
             raise Exception(f"Failed to get information - {e}")
 
@@ -232,27 +249,30 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             include_metadata = config["include_metadata"]
 
             # These tags will not be regenerated in case of config changes
-            if not metadata_dict["APIC:Front cover"] and include_metadata["cover"]:
+            if (not metadata_dict["APIC:Front cover"] or override_cover_file) and include_metadata["cover"]:
                 # Generate thumbnail
-                img = Image.open(requests.get(thumbnail, stream=True).raw)
+                if override_cover_file:
+                    img = Image.open(override_cover_file)
+                else:
+                    img = Image.open(requests.get(thumbnail, stream=True).raw)
 
-                # Ensure aspect ratio
-                target_ratio = [16, 9]
-                width, height = img.size
-                width_ratio = width / target_ratio[0]
-                height_ratio = height / target_ratio[1]
-                if width_ratio > height_ratio:
-                    half_width = width / 2
-                    min_offset = (height_ratio * target_ratio[0]) / 2
-                    left = half_width - min_offset
-                    right = half_width + min_offset
-                    img = img.crop([left, 0, right, height])
-                elif height_ratio > width_ratio:
-                    half_height = height / 2
-                    min_offset = (width_ratio * target_ratio[1]) / 2
-                    top = half_height - min_offset
-                    bottom = half_height + min_offset
-                    img = img.crop([0, top, width, bottom])
+                    # Ensure aspect ratio
+                    target_ratio = [16, 9]
+                    width, height = img.size
+                    width_ratio = width / target_ratio[0]
+                    height_ratio = height / target_ratio[1]
+                    if width_ratio > height_ratio:
+                        half_width = width / 2
+                        min_offset = (height_ratio * target_ratio[0]) / 2
+                        left = half_width - min_offset
+                        right = half_width + min_offset
+                        img = img.crop([left, 0, right, height])
+                    elif height_ratio > width_ratio:
+                        half_height = height / 2
+                        min_offset = (width_ratio * target_ratio[1]) / 2
+                        top = half_height - min_offset
+                        bottom = half_height + min_offset
+                        img = img.crop([0, top, width, bottom])
 
                 # Crop to square
                 width, height = img.size
@@ -264,136 +284,183 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
                 top = half_height - min_offset
                 bottom = half_height + min_offset
                 img_data = convert_image_type(img.crop([left, top, right, bottom]), config["image_format"])
-                tags.add(APIC(3, f"image/{config['image_format']}", 3, "Front cover", img_data))
+                tags.add(id3.APIC(3, f"image/{config['image_format']}", 3, "Front cover", img_data))
 
             if not metadata_dict["TRCK"] and include_metadata["track"]:
-                tags.add(TRCK(encoding=3, text=str(track_num)))
+                tags.add(id3.TRCK(encoding=3, text=str(override_track_num or track_num)))
 
             if not metadata_dict["TDRC"] and include_metadata["date"]:
-                tags.add(TDRC(encoding=3, text=time.strftime('%Y-%m-%d', time.strptime(upload_date, '%Y%m%d'))))
+                tags.add(id3.TDRC(encoding=3, text=override_upload_date or time.strftime('%Y-%m-%d', time.strptime(upload_date, '%Y%m%d'))))
 
             if not metadata_dict["WOAR"]:
-                tags.add(WOAR(link))
+                tags.add(id3.WOAR(link))
 
             if include_metadata["lyrics"] and (not metadata_dict["SYLT"] or not metadata_dict["USLT"]):
-                synced_lyrics = []
-                unsynced_lyrics = []
-                lang = "en"
-                lyrics_langs = config["lyrics_langs"]
-                strict_lang_match = config["strict_lang_match"]
-
-                # Filter out subtitles related to live chat
-                if requested_subtitles is not None:
-                    requested_subtitles = {key:value for (key, value) in requested_subtitles.items() if not key.startswith("live")}
-
-                if subtitles and requested_subtitles and len(subtitles) > 0:
-                    subtitles_url = None
+                if override_lyrics:
                     try:
-                        if len(lyrics_langs) == 0:
-                            lang = next(iter(requested_subtitles))
-                            subtitles_url = get_subtitles_url(subtitles, lang)
-                            print(f"Selecting first available language for lyrics: {lang}")
-                        else:
-                            lyrics_found = False
-                            for lyrics_lang in lyrics_langs:
-                                for requested_lang in requested_subtitles.keys():
-                                    # Regex match full string
-                                    if re.match(r"^" + lyrics_lang + r"$", requested_lang):
-                                        subtitles_url = get_subtitles_url(subtitles, requested_lang)
-                                        lang = requested_lang
-                                        print(f"Selected language for lyrics: {lang}")
-                                        lyrics_found = True
-                                        break
-                                if lyrics_found:
-                                    break
+                        synced_lyrics = [tuple(entry) for entry in override_lyrics]
+                        unsynced_lyrics = [entry[0] for entry in override_lyrics]
+                        tags.add(id3.SYLT(encoding=3, lang=lang, format=2, type=1, text=synced_lyrics))
+                        tags.add(id3.USLT(encoding=3, lang=lang, text="\n".join(unsynced_lyrics)))
+                    except Exception as e:
+                        print(f"Unable to parse overridden lyrics: {e}")
+                else:
+                    synced_lyrics = []
+                    unsynced_lyrics = []
+                    lang = "en"
+                    lyrics_langs = config["lyrics_langs"]
+                    strict_lang_match = config["strict_lang_match"]
 
-                            if subtitles_url is None:
-                                available_languages_str = str(list(requested_subtitles.keys()))
-                                print(f"Lyrics unavailable for selected languages. Available languages: {available_languages_str}")
-                                if not strict_lang_match:
-                                    lang = next(iter(requested_subtitles))
-                                    subtitles_url = get_subtitles_url(subtitles, lang)
-                                    print(f"Selecting first available language for lyrics: {lang}")
-                    except:
+                    # Filter out subtitles related to live chat
+                    if requested_subtitles is not None:
+                        requested_subtitles = {key: value for key, value in requested_subtitles.items() if not key.startswith("live")}
+
+                    if subtitles and requested_subtitles and len(subtitles) > 0:
                         subtitles_url = None
-
-                    if subtitles_url is not None:
                         try:
-                            content = json.loads(requests.get(subtitles_url, stream=True).text)
+                            if len(lyrics_langs) == 0:
+                                lang = next(iter(requested_subtitles))
+                                subtitles_url = get_subtitles_url(subtitles, lang)
+                                print(f"Selecting first available language for lyrics: {lang}")
+                            else:
+                                lyrics_found = False
+                                for lyrics_lang in lyrics_langs:
+                                    for requested_lang in requested_subtitles.keys():
+                                        # Regex match full string
+                                        if re.match(r"^" + lyrics_lang + r"$", requested_lang):
+                                            subtitles_url = get_subtitles_url(subtitles, requested_lang)
+                                            lang = requested_lang
+                                            print(f"Selected language for lyrics: {lang}")
+                                            lyrics_found = True
+                                            break
+                                    if lyrics_found:
+                                        break
 
-                            last_timestamp = -1
-                            last_lines = []
+                                if subtitles_url is None:
+                                    available_languages_str = str(list(requested_subtitles.keys()))
+                                    print(f"Lyrics unavailable for selected languages. Available languages: {available_languages_str}")
+                                    if not strict_lang_match:
+                                        lang = next(iter(requested_subtitles))
+                                        subtitles_url = get_subtitles_url(subtitles, lang)
+                                        print(f"Selecting first available language for lyrics: {lang}")
+                        except:
+                            subtitles_url = None
 
-                            for event in content["events"]:
-                                timestamp = event["tStartMs"]
-                                line = ""
-                                for seg in event["segs"]:
-                                    line += seg["utf8"]
-                                # Remove invalid characters
-                                line = line.replace("\u200b", "").replace("\u200c", "")
+                        if subtitles_url is not None:
+                            response = None
+                            try:
+                                response = requests.get(subtitles_url, stream=True)
+                                content = json.loads(response.text)
 
-                                if (timestamp - last_timestamp) < 1000 and line.strip() in last_lines:
-                                    # Skip if line is repeated too quickly
+                                last_timestamp = -1
+                                last_lines = []
+
+                                for event in content["events"]:
+                                    timestamp = event["tStartMs"]
+                                    line = ""
+                                    for seg in event["segs"]:
+                                        line += seg["utf8"]
+                                    # Remove invalid characters
+                                    line = line.replace("\u200b", "").replace("\u200c", "")
+
+                                    if (timestamp - last_timestamp) < 1000 and line.strip() in last_lines:
+                                        # Skip if line is repeated too quickly
+                                        last_timestamp = timestamp
+                                        continue
+
+                                    if timestamp == last_timestamp:
+                                        # Append line into previous line if same timestamp has multiple lines
+                                        lyrics_line = list(synced_lyrics[-1])
+                                        lyrics_line[0] += "\n" + line
+                                        synced_lyrics[-1] = tuple(lyrics_line)
+
+                                        unsynced_lyrics[-1] += "\n" + line
+
+                                        last_lines.append(line.strip())
+                                    else:
+                                        synced_lyrics.append((line, timestamp))
+                                        unsynced_lyrics.append(line)
+                                        last_lines = [line.strip()]
                                     last_timestamp = timestamp
-                                    continue
-
-                                if timestamp == last_timestamp:
-                                    # Append line into previous line if same timestamp has multiple lines
-                                    lyrics_line = list(synced_lyrics[-1])
-                                    lyrics_line[0] += "\n" + line
-                                    synced_lyrics[-1] = tuple(lyrics_line)
-
-                                    unsynced_lyrics[-1] += "\n" + line
-
-                                    last_lines.append(line.strip())
+                            except Exception as e:
+                                if response is not None:
+                                    status = getattr(response, "status_code", None)
+                                    reason = getattr(response, "reason", None)
+                                    print(f"Unable to get lyrics. Status code: {status}, Reason: {reason}, Error: {e}")
                                 else:
-                                    synced_lyrics.append((line, timestamp))
-                                    unsynced_lyrics.append(line)
-                                    last_lines = [line.strip()]
-                                last_timestamp = timestamp
-                        except Exception as e:
-                            print(f"Unable to get lyrics: {e}")
+                                    print(f"Unable to get lyrics. Error: {e}")
 
-                try:
-                    lang = Language.get(lang).to_alpha3()
-                except:
-                    print(f"Saving unrecognized lyrics language '{lang}' as 'en'")
-                    lang = Language.get("en").to_alpha3()
+                    try:
+                        lang = Language.get(lang).to_alpha3()
+                    except:
+                        print(f"Saving unrecognized lyrics language '{lang}' as 'en'")
+                        lang = Language.get("en").to_alpha3()
 
-                if len(synced_lyrics) == 0:
-                    synced_lyrics = [("Lyrics unavailable", 0)]
-                if len(unsynced_lyrics) == 0:
-                    unsynced_lyrics = ["Lyrics unavailable"]
+                    if len(synced_lyrics) == 0:
+                        synced_lyrics = [("Lyrics unavailable", 0)]
+                    if len(unsynced_lyrics) == 0:
+                        unsynced_lyrics = ["Lyrics unavailable"]
 
-                tags.add(SYLT(encoding=3, lang=lang, format=2, type=1, text=synced_lyrics))
-                tags.add(USLT(encoding=3, lang=lang, text="\n".join(unsynced_lyrics)))
+                    tags.add(id3.SYLT(encoding=3, lang=lang, format=2, type=1, text=synced_lyrics))
+                    tags.add(id3.USLT(encoding=3, lang=lang, text="\n".join(unsynced_lyrics)))
 
             # These tags can be regenerated in case of config changes
             if include_metadata["title"]:
-                if config["use_title"] or track is None:
-                    tags.add(TIT2(encoding=3, text=title))
+                if override_title:
+                    tags.add(id3.TIT2(encoding=3, text=override_title))
+                elif config["use_title"] or track is None:
+                    tags.add(id3.TIT2(encoding=3, text=title))
                 else:
-                    tags.add(TIT2(encoding=3, text=track))
+                    tags.add(id3.TIT2(encoding=3, text=track))
 
             if include_metadata["artist"]:
-                if config["use_uploader"] or artist is None:
-                    tags.add(TPE1(encoding=3, text=uploader))
+                if override_artist:
+                    tags.add(id3.TPE1(encoding=3, text=override_artist))
+                elif config["use_uploader"] or artist is None:
+                    tags.add(id3.TPE1(encoding=3, text=uploader))
                 else:
-                    tags.add(TPE1(encoding=3, text=artist))
+                    tags.add(id3.TPE1(encoding=3, text=artist))
 
             if include_metadata["album"]:
-                if config["use_playlist_name"]:
-                    tags.add(TALB(encoding=3, text=playlist_name))
+                if override_album:
+                    tags.add(id3.TALB(encoding=3, text=override_album))
+                elif config["use_playlist_name"]:
+                    tags.add(id3.TALB(encoding=3, text=playlist_name))
                 elif album is not None:
-                    tags.add(TALB(encoding=3, text=album))
+                    tags.add(id3.TALB(encoding=3, text=album))
                 else:
-                    tags.add(TALB(encoding=3, text="Unknown Album"))
+                    tags.add(id3.TALB(encoding=3, text="Unknown Album"))
+
+            # Handle custom metadata
+            for tag, value in config["custom_metadata"].items():
+                if value:
+                    tags.add(id3.Frames[tag](encoding=3, text=value))
 
             tags.save(v2_version=3)
         except Exception as e:
             raise Exception(f"Unable to update song metadata: {e}")
 
     return force_update_file_name
+
+def parse_time_str(time_str, default: float):
+    if time_str is None or time_str == "":
+        return default
+
+    from_end = time_str.strip().startswith("-")
+    parts = time_str.replace("-", "").strip().split(":")
+    if len(parts) <= 3:
+        try:
+            total_seconds = float(parts[-1])
+            if len(parts) >= 2:
+                total_seconds += int(parts[-2]) * 60.0
+            if len(parts) == 3:
+                total_seconds += int(parts[-3]) * 3600.0
+            return total_seconds if not from_end else -total_seconds
+        except Exception:
+            pass
+
+    print(f"Using default time value '{default}' due to invalid time format in configs: '{time_str}'")
+    return default
 
 def download_song(link, playlist_name, track_num, config: dict):
     directory = os.path.join(os.getcwd(), playlist_name)
@@ -407,7 +474,7 @@ def download_song(link, playlist_name, track_num, config: dict):
         "format": config["audio_format"],
         "cookiefile": None if config["cookie_file"] == "" else config["cookie_file"],
         "cookiesfrombrowser": None if config["cookies_from_browser"] == "" else tuple(config["cookies_from_browser"].split(":")),
-        "extractor_args": None if config["extractor_args"] == "" else config["extractor_args"],
+        "extractor_args": config["extractor_args"],
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": config["audio_codec"],
@@ -419,6 +486,15 @@ def download_song(link, playlist_name, track_num, config: dict):
     if not config["verbose"]:
         ytdl_opts["quiet"] = True
         ytdl_opts["external_downloader_args"] = ["-loglevel", "panic"]
+
+    start_time_str = config.get("start_time")
+    end_time_str = config.get("end_time")
+    if start_time_str or end_time_str:
+        start_time = parse_time_str(start_time_str, default=0.0)
+        end_time = parse_time_str(end_time_str, default=float("inf"))
+
+        ytdl_opts["download_ranges"] = utils.download_range_func(None, [(start_time, end_time)])
+        ytdl_opts["force_keyframes_at_cuts"] = True
 
     with YoutubeDL(ytdl_opts) as ytdl:
         file_path_collector = FilePathCollector()
@@ -495,7 +571,7 @@ def get_song_file_info(playlist_name, song_file_name):
     song_file_path = os.path.join(playlist_name, song_file_name)
 
     try:
-        tags = ID3(song_file_path)
+        tags = id3.ID3(song_file_path)
     except:
         # File is not considered a song file if it contains no metadata
         return None
@@ -551,23 +627,62 @@ def get_song_file_infos(playlist_name):
     return song_file_infos
 
 def setup_include_metadata_config():
-    return {key:True for key in get_metadata_map().keys() if key != "url"}
+    return {key: True for key in get_metadata_map().keys() if key != "url"}
 
-def copy_config(src_config: dict, dst_config: dict):
+def setup_custom_metadata(config: dict):
+    if "custom_metadata" not in config or not isinstance(config["custom_metadata"], dict):
+        return {}
+
+    # Return any custom metadata from source config but remove tags that conflict with existing metadata tags
+    existing_tags = set(flatten(get_metadata_map().values()))
+    return {tag: value for tag, value in config["custom_metadata"].items() if tag not in existing_tags}
+
+def setup_metadata_overrides_config(config: dict):
+    metadata_overrides = {key: "" for key in get_metadata_map().keys() if key != "url"}
+    metadata_overrides["track"] = 0
+    metadata_overrides["lyrics"] = []
+    return metadata_overrides
+
+def validate_config(src_config: dict, dst_config: dict):
+    copy_config(src_config, dst_config, only_validate=True)
+
+def copy_config(src_config: dict, dst_config: dict, only_validate: bool=False):
     # Copy modified src_config values to the dst_config
     for key, value in dst_config.items():
         if isinstance(value, dict):
             sub_dict = {}
-            if key in src_config and isinstance(src_config[key], dict):
-                sub_dict = src_config[key]
+            if key in src_config:
+                if isinstance(src_config[key], dict):
+                    sub_dict = src_config[key]
+                elif only_validate and src_config[key]:
+                    raise Exception(f"Invalid config value type for key '{key}', expected dict but got {type(src_config[key]).__name__}: {src_config[key]}")
 
             for sub_key in value:
                 if sub_key in sub_dict:
-                    value[sub_key] = sub_dict[sub_key]
+                    src_type = type(sub_dict[sub_key])
+                    dst_type = type(value[sub_key])
+                    if dst_type == src_type:
+                        if only_validate:
+                            continue
+
+                        value[sub_key] = sub_dict[sub_key]
+                    elif only_validate and sub_dict[sub_key]:
+                        raise Exception(f"Invalid config value type for key '{sub_key}', expected {dst_type.__name__} but got {src_type.__name__}: {sub_dict[sub_key]}")
+
+            if only_validate:
+                continue
 
             dst_config[key] = value
-        elif key in src_config and type(dst_config[key]) == type(src_config[key]):
-            dst_config[key] = src_config[key]
+        elif key in src_config:
+            src_type = type(src_config[key])
+            dst_type = type(dst_config[key])
+            if dst_type == src_type:
+                if only_validate:
+                    continue
+
+                dst_config[key] = src_config[key]
+            elif only_validate and src_config[key]:
+                raise Exception(f"Invalid config value type for key '{key}', expected {dst_type.__name__} but got {src_type.__name__}: {src_config[key]}")
 
 def get_override_config(video_id, base_config: dict):
     config = copy.deepcopy(base_config)
@@ -600,14 +715,22 @@ def setup_config(config: dict):
         "image_format": "jpeg",
         "lyrics_langs": [],
         "strict_lang_match": False,
+        "start_time": "",
+        "end_time": "",
+
         "cookie_file": "",
         "cookies_from_browser": "",
-        "extractor_args": "",
+        "extractor_args": {},
+
         "verbose": False,
-        "include_metadata": setup_include_metadata_config()
+
+        "include_metadata": setup_include_metadata_config(),
+        "metadata_overrides": setup_metadata_overrides_config(config),
+        "custom_metadata": setup_custom_metadata(config)
     }
 
     # Copy config values to the new config
+    validate_config(config, new_config)
     copy_config(config, new_config)
 
     # Create example song config override
@@ -627,6 +750,10 @@ def setup_config(config: dict):
                 for excluded_override_key in excluded_override_keys:
                     if excluded_override_key in value:
                         value.pop(excluded_override_key)
+                try:
+                    validate_config(value, new_config)
+                except Exception as e:
+                    raise Exception(f"Error in override config for video id '{key}': {e}")
                 new_config["overrides"][key] = value
 
     return new_config
