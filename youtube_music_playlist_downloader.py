@@ -434,7 +434,10 @@ def generate_metadata(file_path, link, track_num, playlist_name, config: dict, r
             # Handle custom metadata
             for tag, value in config["custom_metadata"].items():
                 if value:
-                    tags.add(id3.Frames[tag](encoding=3, text=value))
+                    try:
+                        tags.add(id3.Frames[tag](encoding=3, text=value))
+                    except Exception as e:
+                        print(f"Unable to add custom metadata tag '{tag}' with value '{value}'. Error: {e}")
 
             tags.save(v2_version=3)
         except Exception as e:
@@ -646,33 +649,52 @@ def setup_metadata_overrides_config(config: dict):
 def validate_config(src_config: dict, dst_config: dict):
     copy_config(src_config, dst_config, only_validate=True)
 
-def copy_config(src_config: dict, dst_config: dict, only_validate: bool=False):
+def copy_config(src_config: dict, dst_config: dict, only_validate: bool=False, minimal_copy: bool=False):
     # Copy modified src_config values to the dst_config
-    for key, value in dst_config.items():
-        if isinstance(value, dict):
-            sub_dict = {}
+    # If minimal_copy is True, remove any values in dst_config that are not present in src_config.
+    for key in list(dst_config.keys()):
+        dst_sub_dict = dst_config[key]
+
+        if key not in src_config:
+            if minimal_copy and not only_validate:
+                del dst_config[key]
+            continue
+
+        # Handle nested dicts
+        if isinstance(dst_sub_dict, dict):
+            src_sub_dict = {}
             if key in src_config:
                 if isinstance(src_config[key], dict):
-                    sub_dict = src_config[key]
+                    src_sub_dict = src_config[key]
                 elif only_validate and src_config[key]:
                     raise Exception(f"Invalid config value type for key '{key}', expected dict but got {type(src_config[key]).__name__}: {src_config[key]}")
 
-            for sub_key in value:
-                if sub_key in sub_dict:
-                    src_type = type(sub_dict[sub_key])
-                    dst_type = type(value[sub_key])
+            if minimal_copy and not only_validate:
+                for sub_key in list(dst_sub_dict.keys()):
+                    if sub_key not in src_sub_dict:
+                        del dst_sub_dict[sub_key]
+
+            for sub_key in src_sub_dict:
+                if key == "custom_metadata":
+                    # Do not validate custom metadata tags and directly copy as is
+                    if only_validate:
+                        continue
+                    dst_sub_dict[sub_key] = src_sub_dict[sub_key]
+                elif sub_key in dst_sub_dict:
+                    src_type = type(src_sub_dict[sub_key])
+                    dst_type = type(dst_sub_dict[sub_key])
                     if dst_type == src_type:
                         if only_validate:
                             continue
-
-                        value[sub_key] = sub_dict[sub_key]
-                    elif only_validate and sub_dict[sub_key]:
-                        raise Exception(f"Invalid config value type for key '{sub_key}', expected {dst_type.__name__} but got {src_type.__name__}: {sub_dict[sub_key]}")
+                        dst_sub_dict[sub_key] = src_sub_dict[sub_key]
+                    elif only_validate and src_sub_dict[sub_key]:
+                        raise Exception(f"Invalid config value type for key '{sub_key}', expected {dst_type.__name__} but got {src_type.__name__}: {src_sub_dict[sub_key]}")
 
             if only_validate:
                 continue
 
-            dst_config[key] = value
+            dst_config[key] = dst_sub_dict
+        # Handle individual keys
         elif key in src_config:
             src_type = type(src_config[key])
             dst_type = type(dst_config[key])
@@ -688,6 +710,7 @@ def get_override_config(video_id, base_config: dict):
     config = copy.deepcopy(base_config)
     if video_id in base_config["overrides"]:
         copy_config(base_config["overrides"][video_id], config)
+    del config["overrides"]
 
     return config
 
@@ -745,16 +768,19 @@ def setup_config(config: dict):
 
     # Setup individual song config overrides
     if "overrides" in config:
-        for key, value in config["overrides"].items():
-            if key != "EXAMPLE_VIDEO_ID_HERE" and isinstance(value, dict):
+        for video_id, override_config in config["overrides"].items():
+            if video_id != "EXAMPLE_VIDEO_ID_HERE" and isinstance(override_config, dict):
                 for excluded_override_key in excluded_override_keys:
-                    if excluded_override_key in value:
-                        value.pop(excluded_override_key)
+                    if excluded_override_key in override_config:
+                        override_config.pop(excluded_override_key)
+
+                new_override_config = copy.deepcopy(config_copy)
                 try:
-                    validate_config(value, new_config)
+                    validate_config(override_config, new_override_config)
                 except Exception as e:
-                    raise Exception(f"Error in override config for video id '{key}': {e}")
-                new_config["overrides"][key] = value
+                    raise Exception(f"Error in override config for video id '{video_id}': {e}")
+                copy_config(override_config, new_override_config, minimal_copy=True)
+                new_config["overrides"][video_id] = new_override_config
 
     return new_config
 
