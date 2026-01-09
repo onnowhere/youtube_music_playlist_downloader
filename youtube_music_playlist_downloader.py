@@ -95,8 +95,12 @@ def update_track_num(file_path, track_num):
 def update_file_order(playlist_name, song_file_info, track_num, config: dict, missing_video: bool):
     # Fix name if mismatching
     if config["track_num_in_name"]:
-        song_file_name = re.sub(r"^[0-9]+. ", "", song_file_info.file_name)
-        file_name = f"{track_num}. {song_file_name}"
+        song_file_name = song_file_info.file_name
+        if re.match(r"^[0-9]+\. ", song_file_name):
+            song_file_name = re.sub(r"^[0-9]+\. ", "", song_file_name)
+        elif re.match(r"^[0-9]+ - ", song_file_name):
+            song_file_name = re.sub(r"^[0-9]+ - ", "", song_file_name)
+        file_name = f"{track_num:0{config['_padding']}d} - {song_file_name}"
     else:
         file_name = song_file_info.file_name
     file_path = os.path.join(playlist_name, file_name)
@@ -148,7 +152,7 @@ def get_song_info_ytdl(track_num, config: dict):
     # Get ytdl for song info
     name_format = config["name_format"]
     if config["track_num_in_name"]:
-        name_format = f"{track_num}. {name_format}"
+        name_format = f"{track_num:0{config['_padding']}d} - {name_format}"
 
     ytdl_opts = {
         "quiet": True,
@@ -399,7 +403,7 @@ def download_song(link, playlist_name, track_num, config: dict):
     directory = os.path.join(os.getcwd(), playlist_name)
     name_format = config["name_format"]
     if config["track_num_in_name"]:
-        name_format = f"{track_num}. {name_format}"
+        name_format = f"{track_num:0{config['_padding']}d} - {name_format}"
 
     ytdl_opts = {
         "outtmpl": f"{directory}/{name_format}",
@@ -592,7 +596,7 @@ def setup_config(config: dict):
         "thread_count": 0,
 
         "retain_missing_order": False,
-        "name_format": "%(title)s-%(id)s.%(ext)s",
+        "name_format": "%(title)s.%(ext)s",
         "track_num_in_name": True,
         "audio_format": "bestaudio/best",
         "audio_codec": "mp3",
@@ -650,6 +654,7 @@ def generate_playlist(base_config: dict, config_file_name: str, update: bool, fo
     if "entries" not in playlist:
         raise Exception("No videos found in playlist")
     playlist_entries = playlist["entries"]
+    base_config["_padding"] = max(2, len(str(len(playlist_entries))))
 
     if single_playlist:
         playlist_name = "."
