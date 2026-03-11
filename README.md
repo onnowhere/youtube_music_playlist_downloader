@@ -78,9 +78,13 @@ A `.playlist_config.json` file is generated for all album folders and contains t
     - Language codes support regex and are matched to the full string, for example: `"en.*"` is interpreted as `"^en.*$"` before regex matching
     - Example: `["en.*", "ja"]` means select the first language with prefix `en`, else select the language that exactly matches `ja` if it exists
 - `strict_lang_match`: Whether to avoid selecting lyrics automatically given no language matches (default: `false`)
+- `start_time`: The start time to cut from if specified, in the form of `(-)HH:MM:SS.ms` with lenient parsing (for example `12:34:56`), where a negative value seeks from the end versus the start (default: `""`)
+- `end_time`: The end time to cut to if specified, in the form of `(-)HH:MM:SS.ms` with lenient parsing (for example `-01:23.456`), where a negative value seeks from the end versus the start (default: `""`)
 - `cookie_file`: The path to the cookie file for yt-dlp to refer to (default: `""`)
 - `cookies_from_browser`: The name of the browser for yt-dlp to load cookies from (default: `""`)
-- `extractor_args`: The extractor arguments, such as PO Token, for yt-dlp to run with (default: `""`)
+- `extractor_args`: The extractor arguments, such as PO Token, for yt-dlp to run with, provided as a dict (default: `{}`)
+    - Example incorrect format: `--extractor-args "youtubetab:skip=webpage" --extractor-args "youtube:player_skip=webpage,configs;visitor_data=VISITOR_DATA_VALUE_HERE"`
+    - Example correct converted format: `{"youtubetab":{"skip":["webpage"]},"youtube":{"player_skip":["webpage","configs"],"visitor_data":["VISITOR_DATA_VALUE_HERE"]}}`
 - `verbose`: Whether to enable more verbose debug information from yt-dlp (default: `false`)
 - `include_metadata`: A mapping of metadata fields and whether to include them in song metadata
     - `title`: Include title metadata (default: `true`)
@@ -90,6 +94,18 @@ A `.playlist_config.json` file is generated for all album folders and contains t
     - `album`: Include album metadata (default: `true`)
     - `date`: Include date metadata (default: `true`)
     - `lyrics`: Include lyrics metadata (default: `true`)
+- `metadata_overrides`: Overrides for metadata fields
+    - `title`: Title name, not overridden if left blank (default: `""`)
+    - `cover`: Cover art file path, not overridden if left blank (default: `""`)
+    - `track`: Track number, not overridden if left as 0 (default: `0`)
+    - `artist`: Artist name, not overridden if left blank (default: `""`)
+    - `album`: Album name, not overridden if left blank (default: `""`)
+    - `date`: Upload date, for example `2025-01-31`, not overridden if left blank (default: `""`)
+    - `lyrics`: List of lyric lines and timestamps in milliseconds (ex.: `[["line 1", 1000], ["line 2", 2000]]`), not overridden if left empty (default: `[]`)
+- `custom_metadata`: A mapping of metadata tags and the custom value to be applied for it (default: `{}`)
+    - Cannot be a tag that is already handled by the script: `APIC`, `TIT2`, `TPE1`, `TRCK`, `TALB`, `TDRC`, `WOAR`, `SYLT`, `USLT`
+    - To see available tags, refer to [mutagen docs](https://mutagen.readthedocs.io/en/latest/api/id3_frames.html#id3v2-3-4-frames)
+    - Example: `{"TEXT": "Lyricist Name", "TCOM": ["Composer A Name", "Composer B Name"]}`
 - `overrides`: A mapping of custom individual song config overrides - additional entries can be added for each song
     - `[video_id]`: A mapping of overridden config values for this specific song - a unique alphanumeric YouTube video id
         - `...`: All config values from above are valid here with exception to `url`, `reverse_playlist`, `sync_folder_name`, `use_threading`, `thread_count`, and `overrides`
